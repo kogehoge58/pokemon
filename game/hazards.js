@@ -37,6 +37,7 @@ function applyHazardsOnEntry(side, pokemon, ctx) {
   const push = (msg) => g.log.push(msg);
 
   if (pokemon.item === 'あつぞこブーツ') return;
+  if (pokemon.ability === 'マジックガード') return;
 
   if (h.stealthRock) {
     const eff = effectiveness('いわ', pokemon.types);

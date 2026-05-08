@@ -36,6 +36,7 @@ function applyWeatherEndOfTurn(ctx) {
       if (pokemon.types.some(t => ['いわ', 'はがね', 'じめん'].includes(t))) return;
       if (pokemon.ability === 'すながくれ' || pokemon.ability === 'すなはき' || pokemon.ability === 'すなのちから') return;
       if (pokemon.item === 'ぼうじんゴーグル') return;
+      if (pokemon.ability === 'マジックガード') return;
       const dmg = Math.max(1, Math.floor(pokemon.maxHp / 16));
       const hpBefore = pokemon.hp;
       pokemon.hp = Math.max(0, pokemon.hp - dmg);

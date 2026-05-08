@@ -59,6 +59,17 @@ function makePokemon(name) {
     firstTurnOut: false,
     flinched: false,
     flashFire: false,
+    // アイテム消費フラグ
+    itemUsed: false,
+    // こだわりロック
+    choiceMove: null,
+    // みがわりHP
+    substitute: 0,
+    // ちょうはつカウント
+    taunt: 0,
+    // アンコール
+    encored: null,
+    encoreTurns: 0,
   };
 }
 
@@ -85,6 +96,11 @@ function resetVolatileStats(p) {
   p.destinyBond = false;
   p.flinched = false;
   p.lastMoveDamage = { physical: 0, special: 0 };
+  p.substitute = 0;
+  p.choiceMove = null;
+  p.taunt = 0;
+  p.encored = null;
+  p.encoreTurns = 0;
   // perishSongCounter は交代でも維持
   // status/sleepTurns は維持
   // もうどくカウンターは交代でリセット（Gen4仕様）

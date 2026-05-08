@@ -32,14 +32,30 @@ const MOVE_EFFECTS = {};
 // -------- ステータス付与ヘルパー --------
 function tryStatus(def, defSide, statusId, ctx) {
   if (!applyStatus(def, statusId)) return;
-  const labels = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
   const msgs = { brn: 'やけどを負った', par: 'まひした', psn: 'どくを負った', tox: 'もうどく状態になった', slp: '眠った', frz: 'こおった' };
   const msg = `${def.name}は${msgs[statusId]}！`;
   ctx.state.game.log.push(msg);
   ctx.addEffect({ kind: 'status', side: defSide, status: statusId, message: msg });
+  // シンクロ：状態異常を相手に反射（brn/par/psn/toxのみ）
+  if (def.ability === 'シンクロ' && ['brn', 'par', 'psn', 'tox'].includes(statusId)) {
+    const atkSide = ctx.enemy(defSide);
+    const atk = ctx.active(atkSide);
+    if (atk && !atk.fainted && applyStatus(atk, statusId)) {
+      const sMsg = `${def.name}のシンクロ！ ${atk.name}も${msgs[statusId]}！`;
+      ctx.state.game.log.push(sMsg);
+      ctx.addEffect({ kind: 'status', side: atkSide, status: statusId, message: sMsg });
+    }
+  }
 }
 
-function tryStatDrop(target, targetSide, stat, delta, ctx) {
+function tryStatDrop(target, targetSide, stat, delta, ctx, isSelfInflicted = false) {
+  // クリアボディ/しろいけむり：相手からの能力低下を無効
+  if (delta < 0 && !isSelfInflicted && (target.ability === 'クリアボディ' || target.ability === 'しろいけむり')) {
+    const blockMsg = `${target.name}の${target.ability}！ 能力が下がらなかった！`;
+    ctx.state.game.log.push(blockMsg);
+    ctx.addEffect({ kind: 'message', side: targetSide, message: blockMsg });
+    return;
+  }
   const applied = applyStatStage(target, stat, delta);
   if (!applied) return;
   const statNames = { atk: '攻撃', def: '防御', spa: '特攻', spd: '特防', spe: '素早さ', acc: '命中', eva: '回避' };
@@ -48,6 +64,18 @@ function tryStatDrop(target, targetSide, stat, delta, ctx) {
   const msg = `${target.name}の${statNames[stat]}が${amount}${dir}！`;
   ctx.state.game.log.push(msg);
   ctx.addEffect({ kind: 'message', side: targetSide, message: msg });
+  // しろいハーブ：能力が下がった時に発動（全ての下がった能力を元に戻す）
+  if (delta < 0 && !target.itemUsed && target.item === 'しろいハーブ') {
+    target.itemUsed = true;
+    const statKeys = ['atk', 'def', 'spa', 'spd', 'spe'];
+    statKeys.forEach(k => {
+      const neg = (target.statStages?.[k] || 0);
+      if (neg < 0) applyStatStage(target, k, -neg);
+    });
+    const herbMsg = `${target.name}のしろいハーブ！ 下がった能力が元に戻った！`;
+    ctx.state.game.log.push(herbMsg);
+    ctx.addEffect({ kind: 'message', side: targetSide, message: herbMsg });
+  }
 }
 
 function tryStatUp(target, targetSide, stat, delta, ctx) {
@@ -110,7 +138,7 @@ MOVE_EFFECTS['シャドーボール']  = (as, atk, def, dmg, ctx) => { if (Math.
 MOVE_EFFECTS['サイコキネシス']  = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.10) tryStatDrop(def, ctx.enemy(as), 'spd', -1, ctx); };
 MOVE_EFFECTS['ムーンフォース']  = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.30) tryStatDrop(def, ctx.enemy(as), 'spa', -1, ctx); };
 MOVE_EFFECTS['こごえるかぜ']    = (as, atk, def, dmg, ctx) => tryStatDrop(def, ctx.enemy(as), 'spe', -1, ctx);
-MOVE_EFFECTS['リーフストーム']  = (as, atk, def, dmg, ctx) => tryStatDrop(atk, as, 'spa', -2, ctx);
+MOVE_EFFECTS['リーフストーム']  = (as, atk, def, dmg, ctx) => tryStatDrop(atk, as, 'spa', -2, ctx, true);
 
 // -------- 追加効果：トライアタック（20%で焼き/凍り/痺れいずれか） --------
 MOVE_EFFECTS['トライアタック'] = (as, atk, def, dmg, ctx) => {
@@ -136,6 +164,7 @@ MOVE_EFFECTS['ドレインパンチ'] = (as, atk, def, dmg, ctx) => applyDrain(a
 
 // -------- リコイル技 --------
 function applyRecoil(atk, atkSide, dmg, ratio, ctx) {
+  if (atk.ability === 'マジックガード') return; // 反動なし
   const recoil = Math.max(1, Math.floor(dmg * ratio));
   const hpBefore = atk.hp;
   atk.hp = Math.max(0, atk.hp - recoil);
@@ -322,23 +351,23 @@ MOVE_EFFECTS['アクアブレイク'] = (as, atk, def, dmg, ctx) => { if (Math.r
 
 // -------- 自己能力低下技 --------
 MOVE_EFFECTS['インファイト']   = (as, atk, def, dmg, ctx) => {
-  tryStatDrop(atk, as, 'def', -1, ctx);
-  tryStatDrop(atk, as, 'spd', -1, ctx);
+  tryStatDrop(atk, as, 'def', -1, ctx, true);
+  tryStatDrop(atk, as, 'spd', -1, ctx, true);
 };
 MOVE_EFFECTS['ばかぢから']     = (as, atk, def, dmg, ctx) => {
-  tryStatDrop(atk, as, 'atk', -1, ctx);
-  tryStatDrop(atk, as, 'def', -1, ctx);
+  tryStatDrop(atk, as, 'atk', -1, ctx, true);
+  tryStatDrop(atk, as, 'def', -1, ctx, true);
 };
-MOVE_EFFECTS['オーバーヒート'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx); };
-MOVE_EFFECTS['りゅうせいぐん'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx); };
+MOVE_EFFECTS['オーバーヒート'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx, true); };
+MOVE_EFFECTS['りゅうせいぐん'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx, true); };
 
 // -------- 自己能力上昇変化技 --------
 MOVE_EFFECTS['からをやぶる'] = (as, atk, def, dmg, ctx) => {
   tryStatUp(atk, as, 'atk', 2, ctx);
   tryStatUp(atk, as, 'spa', 2, ctx);
   tryStatUp(atk, as, 'spe', 2, ctx);
-  tryStatDrop(atk, as, 'def', -1, ctx);
-  tryStatDrop(atk, as, 'spd', -1, ctx);
+  tryStatDrop(atk, as, 'def', -1, ctx, true);
+  tryStatDrop(atk, as, 'spd', -1, ctx, true);
 };
 MOVE_EFFECTS['せいちょう']   = (as, atk, def, dmg, ctx) => {
   tryStatUp(atk, as, 'atk', 1, ctx);
@@ -348,7 +377,7 @@ MOVE_EFFECTS['コットンガード'] = (as, atk, def, dmg, ctx) => { tryStatUp(
 MOVE_EFFECTS['のろい']        = (as, atk, def, dmg, ctx) => {
   tryStatUp(atk, as, 'atk', 1, ctx);
   tryStatUp(atk, as, 'def', 1, ctx);
-  tryStatDrop(atk, as, 'spe', -1, ctx);
+  tryStatDrop(atk, as, 'spe', -1, ctx, true);
 };
 
 // -------- 回復変化技 --------
@@ -393,24 +422,42 @@ MOVE_EFFECTS['ねむる'] = (as, atk, def, dmg, ctx) => {
   }
 };
 
-// -------- ちょうはつ（簡易実装：メッセージのみ） --------
+// -------- ちょうはつ（変化技を3ターン封じる） --------
 MOVE_EFFECTS['ちょうはつ'] = (as, atk, def, dmg, ctx) => {
+  const defSide = ctx.enemy(as);
   if (!def.taunt) {
+    // メンタルハーブ：ちょうはつを防ぐ
+    if (!def.itemUsed && def.item === 'メンタルハーブ') {
+      def.itemUsed = true;
+      const herbMsg = `${def.name}のメンタルハーブ！ ちょうはつを防いだ！`;
+      ctx.state.game.log.push(herbMsg);
+      ctx.addEffect({ kind: 'message', side: defSide, message: herbMsg });
+      return;
+    }
     def.taunt = 3;
     const msg = `${def.name}は挑発された！変化技が使えない！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'message', side: ctx.enemy(as), message: msg });
+    ctx.addEffect({ kind: 'message', side: defSide, message: msg });
   }
 };
 
-// -------- アンコール（簡易実装：メッセージのみ） --------
+// -------- アンコール（直前の技しか使えなくする） --------
 MOVE_EFFECTS['アンコール'] = (as, atk, def, dmg, ctx) => {
-  if (def.lastMove && !def.encored) {
-    def.encored = def.lastMove;
+  const defSide = ctx.enemy(as);
+  if (def.lastMoveUsed && !def.encored) {
+    // メンタルハーブ：アンコールを防ぐ
+    if (!def.itemUsed && def.item === 'メンタルハーブ') {
+      def.itemUsed = true;
+      const herbMsg = `${def.name}のメンタルハーブ！ アンコールを防いだ！`;
+      ctx.state.game.log.push(herbMsg);
+      ctx.addEffect({ kind: 'message', side: defSide, message: herbMsg });
+      return;
+    }
+    def.encored = def.lastMoveUsed;
     def.encoreTurns = 3;
     const msg = `${def.name}はアンコール状態になった！直前の技しか使えない！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'message', side: ctx.enemy(as), message: msg });
+    ctx.addEffect({ kind: 'message', side: defSide, message: msg });
   }
 };
 
@@ -429,6 +476,44 @@ MOVE_EFFECTS['こうそくスピン'] = (as, atk, def, dmg, ctx) => {
 // -------- テレポート（低優先度で交代） --------
 MOVE_EFFECTS['テレポート'] = (as, atk, def, dmg, ctx) => {
   ctx.state.game._voltSwitch = as;
+};
+
+// -------- クイックターン（みず版とんぼがえり） --------
+MOVE_EFFECTS['クイックターン'] = (as, atk, def, dmg, ctx) => {
+  ctx.state.game._voltSwitch = as;
+};
+
+// -------- みがわり（HP1/4消費してみがわりを作る） --------
+MOVE_EFFECTS['みがわり'] = (as, atk, def, dmg, ctx) => {
+  if (atk.substitute > 0) {
+    const msg = `${atk.name}はすでにみがわりを出している！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: as, message: msg });
+    return;
+  }
+  const cost = Math.floor(atk.maxHp / 4);
+  if (atk.hp <= cost) {
+    const msg = `${atk.name}はHPが足りない！みがわりに失敗した！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: as, message: msg });
+    return;
+  }
+  atk.hp -= cost;
+  atk.substitute = Math.floor(atk.maxHp / 4);
+  const msg = `${atk.name}はみがわりを作った！（みがわりHP：${atk.substitute}）`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'hit', side: as, hpAfter: atk.hp, targetIndex: ctx.state.game.active[as], labels: [{ text: 'みがわり', tone: 'ability-blue' }], message: msg });
+};
+
+// -------- いやしのねがい（自分が気絶し、次のポケモンを全回復） --------
+MOVE_EFFECTS['いやしのねがい'] = (as, atk, def, dmg, ctx) => {
+  atk.hp = 0;
+  atk.fainted = true;
+  ctx.state.game.healingWish = ctx.state.game.healingWish || {};
+  ctx.state.game.healingWish[as] = true;
+  const msg = `${atk.name}はいやしのねがいで力を使い果たした！`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'faint', side: as, targetIndex: ctx.state.game.active[as], hpAfter: 0, message: msg });
 };
 
 // -------- いたみわけ（HPを平均化） --------

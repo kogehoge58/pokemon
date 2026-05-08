@@ -84,44 +84,50 @@ function applyStatusEndOfTurn(pokemon, side, ctx) {
   const addDmg = (hpBefore, hpAfter, msg) => ctx.addEffect({ kind: 'damage', side, hpBefore, hpAfter, message: msg });
 
   if (pokemon.status === 'brn') {
-    const dmg = Math.max(1, Math.floor(pokemon.maxHp / 8));
-    const hpBefore = pokemon.hp;
-    pokemon.hp = Math.max(0, pokemon.hp - dmg);
-    const msg = `${pokemon.name}はやけどのダメージを受けた！ (-${dmg})`;
-    push(msg);
-    addDmg(hpBefore, pokemon.hp, msg);
-    if (pokemon.hp <= 0 && !pokemon.fainted) {
-      pokemon.fainted = true;
-      const fm = `${pokemon.name}は気絶した！`;
-      push(fm);
-      ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+    if (pokemon.ability !== 'マジックガード') {
+      const dmg = Math.max(1, Math.floor(pokemon.maxHp / 8));
+      const hpBefore = pokemon.hp;
+      pokemon.hp = Math.max(0, pokemon.hp - dmg);
+      const msg = `${pokemon.name}はやけどのダメージを受けた！ (-${dmg})`;
+      push(msg);
+      addDmg(hpBefore, pokemon.hp, msg);
+      if (pokemon.hp <= 0 && !pokemon.fainted) {
+        pokemon.fainted = true;
+        const fm = `${pokemon.name}は気絶した！`;
+        push(fm);
+        ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+      }
     }
   } else if (pokemon.status === 'psn') {
-    const dmg = Math.max(1, Math.floor(pokemon.maxHp / 8));
-    const hpBefore = pokemon.hp;
-    pokemon.hp = Math.max(0, pokemon.hp - dmg);
-    const msg = `${pokemon.name}はどくのダメージを受けた！ (-${dmg})`;
-    push(msg);
-    addDmg(hpBefore, pokemon.hp, msg);
-    if (pokemon.hp <= 0 && !pokemon.fainted) {
-      pokemon.fainted = true;
-      const fm = `${pokemon.name}は気絶した！`;
-      push(fm);
-      ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+    if (pokemon.ability !== 'マジックガード') {
+      const dmg = Math.max(1, Math.floor(pokemon.maxHp / 8));
+      const hpBefore = pokemon.hp;
+      pokemon.hp = Math.max(0, pokemon.hp - dmg);
+      const msg = `${pokemon.name}はどくのダメージを受けた！ (-${dmg})`;
+      push(msg);
+      addDmg(hpBefore, pokemon.hp, msg);
+      if (pokemon.hp <= 0 && !pokemon.fainted) {
+        pokemon.fainted = true;
+        const fm = `${pokemon.name}は気絶した！`;
+        push(fm);
+        ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+      }
     }
   } else if (pokemon.status === 'tox') {
-    const dmg = Math.max(1, Math.floor(pokemon.maxHp * pokemon.toxicCounter / 16));
-    pokemon.toxicCounter = Math.min(pokemon.toxicCounter + 1, 15);
-    const hpBefore = pokemon.hp;
-    pokemon.hp = Math.max(0, pokemon.hp - dmg);
-    const msg = `${pokemon.name}はもうどくのダメージを受けた！ (-${dmg})`;
-    push(msg);
-    addDmg(hpBefore, pokemon.hp, msg);
-    if (pokemon.hp <= 0 && !pokemon.fainted) {
-      pokemon.fainted = true;
-      const fm = `${pokemon.name}は気絶した！`;
-      push(fm);
-      ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+    if (pokemon.ability !== 'マジックガード') {
+      const dmg = Math.max(1, Math.floor(pokemon.maxHp * pokemon.toxicCounter / 16));
+      pokemon.toxicCounter = Math.min(pokemon.toxicCounter + 1, 15);
+      const hpBefore = pokemon.hp;
+      pokemon.hp = Math.max(0, pokemon.hp - dmg);
+      const msg = `${pokemon.name}はもうどくのダメージを受けた！ (-${dmg})`;
+      push(msg);
+      addDmg(hpBefore, pokemon.hp, msg);
+      if (pokemon.hp <= 0 && !pokemon.fainted) {
+        pokemon.fainted = true;
+        const fm = `${pokemon.name}は気絶した！`;
+        push(fm);
+        ctx.addEffect({ kind: 'faint', side, targetIndex: ctx.state.game.active[side], hpAfter: 0, message: fm });
+      }
     }
   }
 

@@ -166,6 +166,13 @@ function getItemAttackerMult(attacker, move) {
     logs.push(`${attacker.name}のこだわりメガネ！特殊技が1.5倍！`);
   }
 
+  // こだわりハチマキ：物理技 1.5倍
+  if (attacker.item === 'こだわりハチマキ' && move.category === '物理') {
+    mult *= 1.5;
+    labels.push({ text: 'こだわりハチマキ', tone: 'ability-red' });
+    logs.push(`${attacker.name}のこだわりハチマキ！物理技が1.5倍！`);
+  }
+
   return { mult, labels, logs };
 }
 

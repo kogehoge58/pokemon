@@ -12,11 +12,33 @@ const ENTRY_HOOKS = {
     const targetSide = ctx.enemy(side);
     const target = ctx.active(targetSide);
     if (!target || target.fainted) return;
+    // クリアボディ/しろいけむり：いかくを無効化
+    if (target.ability === 'クリアボディ' || target.ability === 'しろいけむり') {
+      const blockMsg = `${target.name}の${target.ability}！ いかくを防いだ！`;
+      ctx.state.game.log.push(blockMsg);
+      ctx.addEffect({ kind: 'ability', side: targetSide, ability: target.ability, message: blockMsg });
+      return;
+    }
     const applied = applyStatStage(target, 'atk', -1);
     if (!applied) return;
     const msg = `${p.name}のいかく！ ${target.name}の攻撃が下がった！`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'いかく', labels: [{ text: 'いかく', tone: 'ability-blue' }], message: msg });
+  },
+  'トレース': (side, ctx) => {
+    const p = ctx.active(side);
+    const opp = ctx.active(ctx.enemy(side));
+    if (!p || p.fainted || !opp) return;
+    const uncopyable = new Set(['トレース', 'マルチタイプ', 'ふとうのけん', 'イリュージョン', 'かわりもの']);
+    const copiedAbility = opp.ability;
+    if (!copiedAbility || uncopyable.has(copiedAbility)) return;
+    p.ability = copiedAbility;
+    const msg = `${p.name}のトレース！ ${opp.name}の${copiedAbility}をコピーした！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'ability', side, ability: 'トレース', labels: [{ text: 'トレース', tone: 'ability-blue' }], message: msg });
+    // コピーした特性のエントリーフックを発動（天候・いかく等）
+    const hook = ENTRY_HOOKS[copiedAbility];
+    if (hook) hook(side, ctx);
   },
   'ひでり': (side, ctx) => {
     const p = ctx.active(side);
@@ -259,6 +281,35 @@ function getAttackerMult(attacker, move, eff, isLastMove, weather) {
   }
   if (attacker && attacker.ability === 'スキルリンク') {
     // スキルリンク：連続技が5回ヒット（engine.js 側で使用回数を固定）
+  }
+
+  // げきりゅう：みず技がHP1/3以下で1.5倍
+  if (attacker && attacker.ability === 'げきりゅう' && move.type === 'みず' && attacker.hp <= Math.floor(attacker.maxHp / 3)) {
+    mult *= 1.5;
+    const msg = `${attacker.name}のげきりゅう！ みず技が1.5倍！`;
+    logs.push(msg);
+    labels.push({ text: 'げきりゅう', tone: 'ability-red' });
+  }
+  // もうか：ほのお技がHP1/3以下で1.5倍
+  if (attacker && attacker.ability === 'もうか' && move.type === 'ほのお' && attacker.hp <= Math.floor(attacker.maxHp / 3)) {
+    mult *= 1.5;
+    const msg = `${attacker.name}のもうか！ ほのお技が1.5倍！`;
+    logs.push(msg);
+    labels.push({ text: 'もうか', tone: 'ability-red' });
+  }
+  // しんりょく：くさ技がHP1/3以下で1.5倍
+  if (attacker && attacker.ability === 'しんりょく' && move.type === 'くさ' && attacker.hp <= Math.floor(attacker.maxHp / 3)) {
+    mult *= 1.5;
+    const msg = `${attacker.name}のしんりょく！ くさ技が1.5倍！`;
+    logs.push(msg);
+    labels.push({ text: 'しんりょく', tone: 'ability-red' });
+  }
+  // むしのしらせ：むし技がHP1/3以下で1.5倍
+  if (attacker && attacker.ability === 'むしのしらせ' && move.type === 'むし' && attacker.hp <= Math.floor(attacker.maxHp / 3)) {
+    mult *= 1.5;
+    const msg = `${attacker.name}のむしのしらせ！ むし技が1.5倍！`;
+    logs.push(msg);
+    labels.push({ text: 'むしのしらせ', tone: 'ability-red' });
   }
 
   return { mult, labels, logs };
