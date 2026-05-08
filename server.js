@@ -9,6 +9,7 @@ const { state, enemy } = require('./game/context.js');
 const { makePokemon, abilityOfPokemon, spriteUrlByName } = require('./game/pokemon.js');
 const { doSwitch, resolveTurn } = require('./game/engine.js');
 const { prepareFinalSelectionIfReady, startBattleIfFinalReady } = require('./game/selection.js');
+const { makeHazards } = require('./game/hazards.js');
 
 // スプライトURLをDEXエントリに付加
 Object.keys(DEX).forEach(name => {
@@ -45,7 +46,10 @@ function resetGame(closePopups = false) {
     message: 'プレイヤーA/Bがそれぞれ3体選出してください。',
     revealed: { A: [false, false, false], B: [false, false, false] },
     effects: [],
-    effectId: 0
+    effectId: 0,
+    weather: { type: null, turns: 0 },
+    hazards: { A: makeHazards(), B: makeHazards() },
+    trickRoom: 0,
   };
   notify();
 }

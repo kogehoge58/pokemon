@@ -20,7 +20,7 @@ function makePokemon(name) {
     def: Math.floor(((2 * d.stats.def + 31) * 50) / 100) + 5,
     spa: Math.floor(((2 * d.stats.spa + 31) * 50) / 100) + 5,
     spd: Math.floor(((2 * d.stats.spd + 31) * 50) / 100) + 5,
-    spe: Math.floor(((2 * d.stats.spe + 31) * 50) / 100) + 5
+    spe: Math.floor(((2 * d.stats.spe + 31) * 50) / 100) + 5,
   };
   return {
     name,
@@ -35,12 +35,30 @@ function makePokemon(name) {
     rawStats: { ...battleStats },
     baseStats: { ...d.stats },
     displayStats: { ...d.stats },
-    statStages: { atk: 0, spe: 0 },
+    statStages: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, acc: 0, eva: 0 },
     statColors: {},
     moves: [...d.moves],
     maxHp: battleStats.hp,
     hp: battleStats.hp,
-    fainted: false
+    fainted: false,
+    // 状態異常
+    status: null,
+    sleepTurns: 0,
+    toxicCounter: 1,
+    // 揮発性状態
+    confused: false,
+    confusionTurns: 0,
+    yawnCounter: 0,
+    protected: false,
+    protectCounter: 0,
+    destinyBond: false,
+    perishSongCounter: 0,
+    // 戦闘追跡
+    lastMoveDamage: { physical: 0, special: 0 },
+    lastMoveUsed: null,
+    firstTurnOut: false,
+    flinched: false,
+    flashFire: false,
   };
 }
 
@@ -48,12 +66,29 @@ function stageMultiplier(stage) {
   return stage >= 0 ? (2 + stage) / 2 : 2 / (2 - stage);
 }
 
+// 命中・回避段階用（3段階基準）
+function accStageMultiplier(stage) {
+  return stage >= 0 ? (3 + stage) / 3 : 3 / (3 - stage);
+}
+
 function resetVolatileStats(p) {
   if (!p || !p.rawStats) return;
   p.stats = { ...p.rawStats };
   p.displayStats = { ...p.baseStats };
-  p.statStages = { atk: 0, spe: 0 };
+  p.statStages = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, acc: 0, eva: 0 };
   p.statColors = {};
+  p.confused = false;
+  p.confusionTurns = 0;
+  p.yawnCounter = 0;
+  p.protected = false;
+  p.protectCounter = 0;
+  p.destinyBond = false;
+  p.flinched = false;
+  p.lastMoveDamage = { physical: 0, special: 0 };
+  // perishSongCounter は交代でも維持
+  // status/sleepTurns は維持
+  // もうどくカウンターは交代でリセット（Gen4仕様）
+  if (p.status === 'tox') p.toxicCounter = 1;
 }
 
 function applyStatStage(p, stat, delta) {
@@ -62,6 +97,11 @@ function applyStatStage(p, stat, delta) {
   const after = Math.max(-6, Math.min(6, before + delta));
   if (after === before) return false;
   p.statStages[stat] = after;
+  // acc/eva は段階のみ保持（命中計算時に accStageMultiplier で使用）
+  if (stat === 'acc' || stat === 'eva') {
+    p.statColors[stat] = after > 0 ? 'red' : (after < 0 ? 'blue' : '');
+    return true;
+  }
   const mult = stageMultiplier(after);
   p.stats[stat] = Math.max(1, Math.floor(p.rawStats[stat] * mult));
   p.displayStats[stat] = Math.max(1, Math.floor(p.baseStats[stat] * mult));
@@ -69,4 +109,8 @@ function applyStatStage(p, stat, delta) {
   return true;
 }
 
-module.exports = { makePokemon, stageMultiplier, resetVolatileStats, applyStatStage, abilityOfPokemon, spriteUrlByName };
+module.exports = {
+  makePokemon, stageMultiplier, accStageMultiplier,
+  resetVolatileStats, applyStatStage,
+  abilityOfPokemon, spriteUrlByName,
+};
