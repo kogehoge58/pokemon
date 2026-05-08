@@ -283,6 +283,16 @@ async function playEffects(effects) {
       store.localBurstMove[e.side] = '';
       await sleep(120);
 
+    } else if (e.kind === 'status') {
+      const STATUS_NAMES = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
+      if (e.status) {
+        store.localEffectTags[e.side] = [{ text: STATUS_NAMES[e.status] || e.status, tone: 'status-' + e.status }];
+      } else {
+        store.localEffectTags[e.side] = [{ text: '回復！', tone: 'heal' }];
+      }
+      await sleep(820);
+      store.localEffectTags[e.side] = [];
+
     } else {
       await sleep(650);
     }

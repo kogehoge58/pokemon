@@ -117,10 +117,11 @@ export default defineComponent({
     }
 
     function statVal(p, key) {
-      const stage = p.statStages?.[key] || 0;
-      if (stage !== 0) return null;
-      return (p.displayStats?.[key] ?? p.baseStats?.[key] ?? p.stats?.[key]);
+      return (p.baseStats?.[key] ?? p.stats?.[key]);
     }
+
+    const STATUS_LABELS = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
+    function statusLabel(s) { return STATUS_LABELS[s] || s; }
 
     function movePanelStyle(type) {
       const color = data.value?.TYPES?.[type]?.color || '#4776ff';
@@ -142,7 +143,7 @@ export default defineComponent({
     return {
       store, game, data, role, battleMessage, stabWeakTypes, isDisabled, commandChosen, ownWaiting, selectedCmd,
       battleBadge, canSeePartyMon, isFaintVisualReady, animClass, resultClass, stampTone, stampText,
-      getShownHp, getActivePokemon, getActiveIndex, statArrows, statVal, movePanelStyle, moveEffText,
+      getShownHp, getActivePokemon, getActiveIndex, statArrows, statVal, statusLabel, movePanelStyle, moveEffText,
       isSelectedFight, isSelectedSwitch, isSelectedSurrender,
       STAT_KEYS, enemy, abilityOfPokemon, hpClass, openModal, api, effectiveness, effText,
       displayedActiveIndex, displayedHp
@@ -190,6 +191,9 @@ export default defineComponent({
                     <type-badge v-for="t in getActivePokemon(s).types" :key="t" :type="t" />
                   </div>
                   <div class="ability-badge">特性：{{ getActivePokemon(s).ability || abilityOfPokemon(getActivePokemon(s).name) }}</div>
+                  <div v-if="getActivePokemon(s).status" class="poke-status-badge" :class="'status-' + getActivePokemon(s).status">
+                    {{ statusLabel(getActivePokemon(s).status) }}
+                  </div>
                 </div>
                 <sprite-img
                   :mon="getActivePokemon(s)"
@@ -221,9 +225,7 @@ export default defineComponent({
               <div class="stats">
                 <div v-for="[key, label] in STAT_KEYS" :key="key" class="stat">
                   {{ label }}<br>
-                  <b v-if="statVal(getActivePokemon(s), key) !== null">{{ statVal(getActivePokemon(s), key) }}</b>
-                  <span v-if="statArrows(getActivePokemon(s), key)?.dir === 'up'" class="stat-arrow-up">{{ '↑'.repeat(statArrows(getActivePokemon(s), key).count) }}</span>
-                  <span v-if="statArrows(getActivePokemon(s), key)?.dir === 'down'" class="stat-arrow-down">{{ '↓'.repeat(statArrows(getActivePokemon(s), key).count) }}</span>
+                  <b>{{ statVal(getActivePokemon(s), key) }}</b><span v-if="statArrows(getActivePokemon(s), key)?.dir === 'up'" class="stat-arrow-up">{{ '↑'.repeat(statArrows(getActivePokemon(s), key).count) }}</span><span v-if="statArrows(getActivePokemon(s), key)?.dir === 'down'" class="stat-arrow-down">{{ '↓'.repeat(statArrows(getActivePokemon(s), key).count) }}</span>
                 </div>
               </div>
             </div>

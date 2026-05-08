@@ -137,6 +137,18 @@ export default defineComponent({
       store.stackModalProps = { name, isOpponent };
     }
 
+    // --- 確認モーダル送信（closeModal前にpropsを取り出す） ---
+    function submitConfirmSwitch() {
+      const { side, index } = store.modalProps;
+      closeModal();
+      api('/command', { side, cmd: { type: 'switch', index } });
+    }
+    function submitConfirmSurrender() {
+      const side = store.modalProps?.side;
+      closeModal();
+      api('/command', { side, cmd: { type: 'surrender' } });
+    }
+
     return {
       store, game, data, role, enemy, abilityOfPokemon, effectiveness, effText, closeModal, closeStackModal, api, setRole,
       STAT_LABELS,
@@ -145,6 +157,7 @@ export default defineComponent({
       fightPokemon, fightTarget, fightSelectedCmd, fightLocked, fightMoveStyle, fightAdj, fightEff, submitMove,
       isForceSwitch, switchCmd, switchLocked, switchConfirm,
       opponentNames, openStack,
+      submitConfirmSwitch, submitConfirmSurrender,
     };
   },
   template: `
@@ -228,7 +241,7 @@ export default defineComponent({
           </div>
           <div class="confirm-actions">
             <button class="ghost" @click="closeModal()">キャンセル</button>
-            <button class="danger" @click="closeModal(); api('/command', { side: store.modalProps.side, cmd: { type: 'surrender' } })">降参する</button>
+            <button class="danger" @click="submitConfirmSurrender()">降参する</button>
           </div>
         </template>
 
@@ -240,7 +253,7 @@ export default defineComponent({
           </div>
           <div class="confirm-actions">
             <button class="ghost" @click="closeModal()">キャンセル</button>
-            <button class="primary" @click="closeModal(); api('/command', { side: store.modalProps.side, cmd: { type: 'switch', index: store.modalProps.index } })">交換する</button>
+            <button class="primary" @click="submitConfirmSwitch()">交換する</button>
           </div>
         </template>
 
