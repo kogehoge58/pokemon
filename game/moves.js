@@ -10,7 +10,7 @@ const MOVE_PRIORITY = {
   'しんそく': 2,
   'アクアジェット': 1, 'バレットパンチ': 1, 'マッハパンチ': 1,
   'こおりのつぶて': 1, 'かげうち': 1, 'ふいうち': 1,
-  'みちづれ': -6, 'ほろびのうた': -6,
+  'みちづれ': -6, 'ほろびのうた': -6, 'テレポート': -6,
   'トリックルーム': -7,
 };
 
@@ -18,6 +18,7 @@ const MOVE_PRIORITY = {
 const MOVE_CRIT_STAGE = {
   'ストーンエッジ': 1, 'クロスチョップ': 1, 'サイコカッター': 1,
   'つじぎり': 1, 'シャドークロー': 1, 'ブレイズキック': 1,
+  'クラブハンマー': 1,
 };
 
 function getMoveBaseCritStage(moveName) {
@@ -277,6 +278,200 @@ MOVE_EFFECTS['ねばねばネット'] = (as, atk, def, dmg, ctx) => {
   const msg = added ? 'ねばねばネットが設置された！' : 'ねばねばネットはすでに設置されている！';
   ctx.state.game.log.push(msg);
   ctx.addEffect({ kind: 'message', side: defSide, message: msg });
+};
+
+// -------- 追加効果：のしかかり・たきのぼり・ねっとう・ほっぺすりすり --------
+MOVE_EFFECTS['のしかかり'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.30) tryStatus(def, ctx.enemy(as), 'par', ctx); };
+MOVE_EFFECTS['たきのぼり'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.20) tryFlinch(def, as); };
+MOVE_EFFECTS['ねっとう']   = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.30) tryStatus(def, ctx.enemy(as), 'brn', ctx); };
+MOVE_EFFECTS['ふんえん']   = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.30) tryStatus(def, ctx.enemy(as), 'brn', ctx); };
+MOVE_EFFECTS['ほっぺすりすり'] = (as, atk, def, dmg, ctx) => { tryStatus(def, ctx.enemy(as), 'par', ctx); };
+
+// -------- 追加効果：フリーズドライ（水タイプにも抜群）--------
+MOVE_EFFECTS['フリーズドライ'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.10) tryStatus(def, ctx.enemy(as), 'frz', ctx); };
+
+// -------- 追加効果：睡眠技 --------
+MOVE_EFFECTS['キノコのほうし'] = (as, atk, def, dmg, ctx) => { tryStatus(def, ctx.enemy(as), 'slp', ctx); };
+MOVE_EFFECTS['ねむりごな']     = (as, atk, def, dmg, ctx) => { tryStatus(def, ctx.enemy(as), 'slp', ctx); };
+MOVE_EFFECTS['あくまのキッス'] = (as, atk, def, dmg, ctx) => { tryStatus(def, ctx.enemy(as), 'slp', ctx); };
+
+// -------- 追加効果：かみくだく・あくのはどう --------
+MOVE_EFFECTS['かみくだく']   = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.20) tryStatDrop(def, ctx.enemy(as), 'def', -1, ctx); };
+MOVE_EFFECTS['あくのはどう'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.20) tryFlinch(def, as); };
+
+// -------- 追加効果：ぼうふう（30%こんらん）--------
+MOVE_EFFECTS['ぼうふう'] = (as, atk, def, dmg, ctx) => {
+  if (Math.random() < 0.30) {
+    const { applyConfusion } = require('./status.js');
+    if (applyConfusion(def)) {
+      const msg = `${def.name}は混乱した！`;
+      ctx.state.game.log.push(msg);
+      ctx.addEffect({ kind: 'message', side: ctx.enemy(as), message: msg });
+    }
+  }
+};
+
+// -------- 追加効果：コメットパンチ（20%で攻撃↑）--------
+MOVE_EFFECTS['コメットパンチ'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.20) tryStatUp(atk, as, 'atk', 1, ctx); };
+
+// -------- 追加効果：じゃれつく（10%で攻撃↓）--------
+MOVE_EFFECTS['じゃれつく'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.10) tryStatDrop(def, ctx.enemy(as), 'atk', -1, ctx); };
+
+// -------- 追加効果：アクアブレイク（20%で防御↓）--------
+MOVE_EFFECTS['アクアブレイク'] = (as, atk, def, dmg, ctx) => { if (Math.random() < 0.20) tryStatDrop(def, ctx.enemy(as), 'def', -1, ctx); };
+
+// -------- 自己能力低下技 --------
+MOVE_EFFECTS['インファイト']   = (as, atk, def, dmg, ctx) => {
+  tryStatDrop(atk, as, 'def', -1, ctx);
+  tryStatDrop(atk, as, 'spd', -1, ctx);
+};
+MOVE_EFFECTS['ばかぢから']     = (as, atk, def, dmg, ctx) => {
+  tryStatDrop(atk, as, 'atk', -1, ctx);
+  tryStatDrop(atk, as, 'def', -1, ctx);
+};
+MOVE_EFFECTS['オーバーヒート'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx); };
+MOVE_EFFECTS['りゅうせいぐん'] = (as, atk, def, dmg, ctx) => { tryStatDrop(atk, as, 'spa', -2, ctx); };
+
+// -------- 自己能力上昇変化技 --------
+MOVE_EFFECTS['からをやぶる'] = (as, atk, def, dmg, ctx) => {
+  tryStatUp(atk, as, 'atk', 2, ctx);
+  tryStatUp(atk, as, 'spa', 2, ctx);
+  tryStatUp(atk, as, 'spe', 2, ctx);
+  tryStatDrop(atk, as, 'def', -1, ctx);
+  tryStatDrop(atk, as, 'spd', -1, ctx);
+};
+MOVE_EFFECTS['せいちょう']   = (as, atk, def, dmg, ctx) => {
+  tryStatUp(atk, as, 'atk', 1, ctx);
+  tryStatUp(atk, as, 'spa', 1, ctx);
+};
+MOVE_EFFECTS['コットンガード'] = (as, atk, def, dmg, ctx) => { tryStatUp(atk, as, 'def', 3, ctx); };
+MOVE_EFFECTS['のろい']        = (as, atk, def, dmg, ctx) => {
+  tryStatUp(atk, as, 'atk', 1, ctx);
+  tryStatUp(atk, as, 'def', 1, ctx);
+  tryStatDrop(atk, as, 'spe', -1, ctx);
+};
+
+// -------- 回復変化技 --------
+function applyHeal(p, side, ratio, ctx) {
+  const heal = Math.max(1, Math.floor(p.maxHp * ratio));
+  const hpBefore = p.hp;
+  p.hp = Math.min(p.maxHp, p.hp + heal);
+  const recovered = p.hp - hpBefore;
+  if (recovered > 0) {
+    const msg = `${p.name}はHPを${recovered}回復した！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'hit', side, labels: [{ text: `+${recovered}`, tone: 'heal' }], hpAfter: p.hp, targetIndex: ctx.state.game.active[side], message: msg });
+  }
+}
+MOVE_EFFECTS['なまける']   = (as, atk, def, dmg, ctx) => { applyHeal(atk, as, 0.5, ctx); };
+MOVE_EFFECTS['じこさいせい'] = (as, atk, def, dmg, ctx) => { applyHeal(atk, as, 0.5, ctx); };
+MOVE_EFFECTS['タマゴうみ'] = (as, atk, def, dmg, ctx) => { applyHeal(atk, as, 0.5, ctx); };
+MOVE_EFFECTS['はねやすめ'] = (as, atk, def, dmg, ctx) => { applyHeal(atk, as, 0.5, ctx); };
+MOVE_EFFECTS['つきのひかり'] = (as, atk, def, dmg, ctx) => {
+  const weather = ctx.state.game.weather;
+  const ratio = weather === 'sun' ? 2 / 3 : weather === 'rain' || weather === 'sand' ? 0.25 : 0.5;
+  applyHeal(atk, as, ratio, ctx);
+};
+
+// -------- ねむる（完全回復＋ねむり状態） --------
+MOVE_EFFECTS['ねむる'] = (as, atk, def, dmg, ctx) => {
+  if (atk.status && atk.status !== 'slp') {
+    atk.status = null;
+    atk.statusTurns = 0;
+  }
+  const hpBefore = atk.hp;
+  atk.hp = atk.maxHp;
+  const recovered = atk.hp - hpBefore;
+  const { applyStatus } = require('./status.js');
+  applyStatus(atk, 'slp');
+  atk.statusTurns = 2;
+  const msg = `${atk.name}はぐっすり眠り体力を全回復した！`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'status', side: as, status: 'slp', message: msg });
+  if (recovered > 0) {
+    ctx.addEffect({ kind: 'hit', side: as, labels: [{ text: `+${recovered}`, tone: 'heal' }], hpAfter: atk.hp, targetIndex: ctx.state.game.active[as], message: msg });
+  }
+};
+
+// -------- ちょうはつ（簡易実装：メッセージのみ） --------
+MOVE_EFFECTS['ちょうはつ'] = (as, atk, def, dmg, ctx) => {
+  if (!def.taunt) {
+    def.taunt = 3;
+    const msg = `${def.name}は挑発された！変化技が使えない！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: ctx.enemy(as), message: msg });
+  }
+};
+
+// -------- アンコール（簡易実装：メッセージのみ） --------
+MOVE_EFFECTS['アンコール'] = (as, atk, def, dmg, ctx) => {
+  if (def.lastMove && !def.encored) {
+    def.encored = def.lastMove;
+    def.encoreTurns = 3;
+    const msg = `${def.name}はアンコール状態になった！直前の技しか使えない！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: ctx.enemy(as), message: msg });
+  }
+};
+
+// -------- こうそくスピン（設置技除去＋素早さ↑） --------
+MOVE_EFFECTS['こうそくスピン'] = (as, atk, def, dmg, ctx) => {
+  const { removeHazards } = require('./hazards.js');
+  const removed = removeHazards(as, ctx.state.game);
+  if (removed) {
+    const msg = `${atk.name}は設置技を吹き飛ばした！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: as, message: msg });
+  }
+  tryStatUp(atk, as, 'spe', 1, ctx);
+};
+
+// -------- テレポート（低優先度で交代） --------
+MOVE_EFFECTS['テレポート'] = (as, atk, def, dmg, ctx) => {
+  ctx.state.game._voltSwitch = as;
+};
+
+// -------- いたみわけ（HPを平均化） --------
+MOVE_EFFECTS['いたみわけ'] = (as, atk, def, dmg, ctx) => {
+  const defSide = ctx.enemy(as);
+  const avg = Math.floor((atk.hp + def.hp) / 2);
+  const atkHpBefore = atk.hp;
+  const defHpBefore = def.hp;
+  atk.hp = Math.min(atk.maxHp, avg);
+  def.hp = Math.min(def.maxHp, avg);
+  const msg = `${atk.name}と${def.name}のHPが平均化された！`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'hit', side: as, hpAfter: atk.hp, targetIndex: ctx.state.game.active[as], labels: [], message: msg });
+  ctx.addEffect({ kind: 'hit', side: defSide, hpAfter: def.hp, targetIndex: ctx.state.game.active[defSide], labels: [], message: msg });
+};
+
+// -------- クリアスモッグ（能力変化リセット） --------
+MOVE_EFFECTS['クリアスモッグ'] = (as, atk, def, dmg, ctx) => {
+  const defSide = ctx.enemy(as);
+  let resetAny = false;
+  if (def.statStages) {
+    for (const k of Object.keys(def.statStages)) {
+      if (def.statStages[k] !== 0) { def.statStages[k] = 0; resetAny = true; }
+    }
+  }
+  if (resetAny) {
+    const msg = `${def.name}の能力変化がリセットされた！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'message', side: defSide, message: msg });
+  }
+};
+
+// -------- はらだいこ（HP半分消費、攻撃最大） --------
+MOVE_EFFECTS['はらだいこ'] = (as, atk, def, dmg, ctx) => {
+  const cost = Math.floor(atk.maxHp / 2);
+  if (atk.hp <= cost) return; // HP足りなければ失敗
+  const hpBefore = atk.hp;
+  atk.hp = Math.max(1, atk.hp - cost);
+  const msg = `${atk.name}はお腹を叩き攻撃を最大まで上げた！`;
+  ctx.state.game.log.push(msg);
+  atk.statStages = atk.statStages || {};
+  atk.statStages.atk = 6;
+  ctx.addEffect({ kind: 'hit', side: as, hpAfter: atk.hp, targetIndex: ctx.state.game.active[as], labels: [{ text: 'はらだいこ', tone: 'ability-red' }], message: msg });
 };
 
 function applyMoveAdditionalEffect(moveName, attackerSide, attacker, defender, dmg, ctx) {

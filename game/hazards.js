@@ -92,4 +92,14 @@ function applyHazardsOnEntry(side, pokemon, ctx) {
   }
 }
 
-module.exports = { makeHazards, addHazard, clearHazards, applyHazardsOnEntry };
+function removeHazards(side, game) {
+  const h = game.hazards?.[side];
+  if (!h) return false;
+  const had = h.stealthRock || h.spikes > 0 || h.stickyWeb;
+  h.stealthRock = false;
+  h.spikes = 0;
+  h.stickyWeb = false;
+  return had;
+}
+
+module.exports = { makeHazards, addHazard, clearHazards, removeHazards, applyHazardsOnEntry };

@@ -21,16 +21,18 @@ const ENTRY_HOOKS = {
   'ひでり': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
-    setWeather(ctx.state.game, 'sun', 5, ctx);
-    const msg = `${p.name}のひでり！ 日差しが強くなった！`;
+    const turns = p.item === 'あついいわ' ? 8 : 5;
+    setWeather(ctx.state.game, 'sun', turns, ctx);
+    const msg = `${p.name}のひでり！ 日差しが強くなった！${turns === 8 ? '（あついいわで延長）' : ''}`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'ひでり', labels: [{ text: 'ひでり', tone: 'ability-red' }], message: msg });
   },
   'あめふらし': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
-    setWeather(ctx.state.game, 'rain', 5, ctx);
-    const msg = `${p.name}のあめふらし！ 雨が降り始めた！`;
+    const turns = p.item === 'しめったいわ' ? 8 : 5;
+    setWeather(ctx.state.game, 'rain', turns, ctx);
+    const msg = `${p.name}のあめふらし！ 雨が降り始めた！${turns === 8 ? '（しめったいわで延長）' : ''}`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'あめふらし', labels: [{ text: 'あめふらし', tone: 'ability-blue' }], message: msg });
   },
@@ -61,6 +63,21 @@ const END_TURN_HOOKS = {
   },
   'さいせいりょく': (side, ctx) => {
     // さいせいりょく：交代時にHP1/3回復（engine.js の doSwitch で処理）
+  },
+  'ムラっけ': (side, ctx) => {
+    const p = ctx.active(side);
+    if (!p || p.fainted) return;
+    const statKeys = ['atk', 'def', 'spa', 'spd', 'spe', 'acc', 'eva'];
+    const statNames = { atk:'攻撃', def:'防御', spa:'特攻', spd:'特防', spe:'素早さ', acc:'命中', eva:'回避' };
+    // ランダムに1つ+2、別の1つ-1
+    const shuffled = [...statKeys].sort(() => Math.random() - 0.5);
+    const upStat = shuffled[0];
+    const downStat = shuffled.find(k => k !== upStat);
+    applyStatStage(p, upStat, 2);
+    applyStatStage(p, downStat, -1);
+    const msg = `${p.name}のムラっけ！${statNames[upStat]}が上がり、${statNames[downStat]}が下がった！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'ability', side, ability: 'ムラっけ', labels: [{ text: 'ムラっけ', tone: 'ability-red' }], message: msg });
   },
 };
 

@@ -9,7 +9,7 @@ const {
   getModifiedMove, getCritRate, getStabMult,
   getAttackerMult, getDefenderMult, checkGanjoSurvive,
 } = require('./abilities.js');
-const { triggerItemOnEntry, triggerItemOnEndTurn, getItemAttackerMult, getItemDefenderMult } = require('./items.js');
+const { triggerItemOnEntry, triggerItemOnEndTurn, getItemAttackerMult, getItemDefenderMult, getItemSpeedMult, checkItemSurvive, checkWeaknessPolicy, applyLifeOrbRecoil } = require('./items.js');
 const { MOVE_PRIORITY, applyMoveAdditionalEffect } = require('./moves.js');
 const {
   checkCanMove, applyStatusEndOfTurn,
@@ -55,6 +55,26 @@ function doSwitch(s, i, triggerEntry = true) {
   state.game.log.push(`プレイヤー${s}は ${beforeMon.name} を引っ込めた！`);
   addEffect({ kind: 'message', side: s, message: `プレイヤー${s}は ${beforeMon.name} を引っ込めた！` });
   resetVolatileStats(beforeMon);
+
+  // さいせいりょく：引っ込む時にHP1/3回復
+  if (beforeMon.ability === 'さいせいりょく' && !beforeMon.fainted && beforeMon.hp < beforeMon.maxHp) {
+    const heal = Math.max(1, Math.floor(beforeMon.maxHp / 3));
+    const hpBefore = beforeMon.hp;
+    beforeMon.hp = Math.min(beforeMon.maxHp, beforeMon.hp + heal);
+    const msg = `${beforeMon.name}のさいせいりょく！ HPが${beforeMon.hp - hpBefore}回復した！`;
+    state.game.log.push(msg);
+    addEffect({ kind: 'ability', side: s, ability: 'さいせいりょく', labels: [{ text: 'さいせいりょく', tone: 'ability-blue' }], message: msg });
+  }
+
+  // しぜんかいふく：引っ込む時に状態異常回復
+  if (beforeMon.ability === 'しぜんかいふく' && beforeMon.status) {
+    beforeMon.status = null;
+    beforeMon.statusTurns = 0;
+    const msg = `${beforeMon.name}のしぜんかいふく！ 状態異常が回復した！`;
+    state.game.log.push(msg);
+    addEffect({ kind: 'ability', side: s, ability: 'しぜんかいふく', labels: [{ text: 'しぜんかいふく', tone: 'ability-blue' }], message: msg });
+  }
+
   state.game.active[s] = i;
   if (state.game.revealed?.[s]) state.game.revealed[s][i] = true;
   const incoming = active(s);
@@ -250,6 +270,14 @@ function doAttack(s, moveName, isLastMove) {
     abilityLogs.push(ganjo.log);
   }
 
+  // きあいのタスキチェック（がんじょう後）
+  const taski = (fixedDmg === null && !ganjo) ? checkItemSurvive(def, hpBefore, dmg) : null;
+  if (taski) {
+    dmg = taski.dmg;
+    abilityHitLabels.unshift(taski.label);
+    abilityLogs.push(taski.log);
+  }
+
   addEffect({ kind: 'attack', side: s, moveName, message: attackMsg, abilityLabels: abilityAttackLabels });
   for (const msg of abilityLogs) g.log.push(msg);
 
@@ -271,6 +299,12 @@ function doAttack(s, moveName, isLastMove) {
   if (atk.ability !== 'ちからずく') {
     applyMoveAdditionalEffect(moveName, s, atk, def, dmg, ctx);
   }
+
+  // じゃくてんほけん：弱点技を受けたら発動
+  if (!def.fainted) checkWeaknessPolicy(def, defSide, eff, ctx);
+
+  // いのちのたま反動
+  if (!atk.fainted && m.power > 0) applyLifeOrbRecoil(atk, s, ctx);
 
   // リコイルや追加効果で攻撃側が気絶した可能性を先にチェック
   if (atk.hp <= 0 && !atk.fainted) {
@@ -376,7 +410,13 @@ function resolveTurn() {
       const poke = active(a.side);
       const mn = a.cmd.moveName;
       const priority = MOVE_PRIORITY[mn] || 0;
-      const spe = Math.floor(poke.stats.spe * getParalysisSpeedMult(poke));
+      const weather = g.weather?.type || null;
+      const abilitySpeBoost = (
+        (poke.ability === 'すいすい' && weather === 'rain') ||
+        (poke.ability === 'ようりょくそ' && weather === 'sun') ||
+        (poke.ability === 'かるわざ' && poke.itemUsed)
+      ) ? 2 : 1;
+      const spe = Math.floor(poke.stats.spe * getParalysisSpeedMult(poke) * getItemSpeedMult(poke) * abilitySpeBoost);
       return { ...a, priority, spe, tie: Math.random() };
     })
     .sort((x, y) => {
