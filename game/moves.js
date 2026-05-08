@@ -59,11 +59,13 @@ function tryStatDrop(target, targetSide, stat, delta, ctx, isSelfInflicted = fal
   const applied = applyStatStage(target, stat, delta);
   if (!applied) return;
   const statNames = { atk: '攻撃', def: '防御', spa: '特攻', spd: '特防', spe: '素早さ', acc: '命中', eva: '回避' };
-  const dir = delta < 0 ? '下がった' : '上がった';
-  const amount = Math.abs(delta) > 1 ? 'がくっと' : '';
-  const msg = `${target.name}の${statNames[stat]}が${amount}${dir}！`;
+  const dir = delta < 0 ? '↓' : '↑';
+  const amount = Math.abs(delta) >= 2 ? dir.repeat(Math.abs(delta)) : dir;
+  const labelText = `${statNames[stat]}${amount}`;
+  const tone = delta < 0 ? 'ability-blue' : 'ability-red';
+  const msg = `${target.name}の${statNames[stat]}が${Math.abs(delta) > 1 ? 'がくっと' : ''}${delta < 0 ? '下がった' : '上がった'}！`;
   ctx.state.game.log.push(msg);
-  ctx.addEffect({ kind: 'message', side: targetSide, message: msg });
+  ctx.addEffect({ kind: 'stat', side: targetSide, labels: [{ text: labelText, tone }], message: msg });
   // しろいハーブ：能力が下がった時に発動（全ての下がった能力を元に戻す）
   if (delta < 0 && !target.itemUsed && target.item === 'しろいハーブ') {
     target.itemUsed = true;
@@ -213,8 +215,24 @@ MOVE_EFFECTS['ちょうのまい']   = (as, atk, def, dmg, ctx) => {
 };
 
 // 状態異常変化技
-MOVE_EFFECTS['でんじは'] = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'par', ctx);
-MOVE_EFFECTS['どくどく'] = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'tox', ctx);
+MOVE_EFFECTS['でんじは']       = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'par', ctx);
+MOVE_EFFECTS['どくどく']       = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'tox', ctx);
+MOVE_EFFECTS['おにび']         = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'brn', ctx);
+MOVE_EFFECTS['キノコのほうし'] = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'slp', ctx);
+MOVE_EFFECTS['ねむりごな']     = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'slp', ctx);
+MOVE_EFFECTS['うたう']         = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'slp', ctx);
+MOVE_EFFECTS['さいみんじゅつ'] = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'slp', ctx);
+MOVE_EFFECTS['あくまのキッス'] = (as, atk, def, dmg, ctx) => tryStatus(def, ctx.enemy(as), 'slp', ctx);
+
+// はたきおとす：命中後に守備側の持ち物を消す
+MOVE_EFFECTS['はたきおとす'] = (as, atk, def, dmg, ctx) => {
+  if (!def.item) return;
+  const lost = def.item;
+  def.item = null;
+  const msg = `${def.name}の${lost}が落とされた！`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'ability', side: ctx.enemy(as), labels: [{ text: `${lost}を失った`, tone: 'ability-red' }], message: msg });
+};
 MOVE_EFFECTS['あくび']   = (as, atk, def, dmg, ctx) => {
   const defSide = ctx.enemy(as);
   if (!def.status && !def.yawnCounter) {
@@ -370,8 +388,9 @@ MOVE_EFFECTS['からをやぶる'] = (as, atk, def, dmg, ctx) => {
   tryStatDrop(atk, as, 'spd', -1, ctx, true);
 };
 MOVE_EFFECTS['せいちょう']   = (as, atk, def, dmg, ctx) => {
-  tryStatUp(atk, as, 'atk', 1, ctx);
-  tryStatUp(atk, as, 'spa', 1, ctx);
+  const delta = ctx.state.game.weather?.type === 'sun' ? 2 : 1;
+  tryStatUp(atk, as, 'atk', delta, ctx);
+  tryStatUp(atk, as, 'spa', delta, ctx);
 };
 MOVE_EFFECTS['コットンガード'] = (as, atk, def, dmg, ctx) => { tryStatUp(atk, as, 'def', 3, ctx); };
 MOVE_EFFECTS['のろい']        = (as, atk, def, dmg, ctx) => {
@@ -488,14 +507,14 @@ MOVE_EFFECTS['みがわり'] = (as, atk, def, dmg, ctx) => {
   if (atk.substitute > 0) {
     const msg = `${atk.name}はすでにみがわりを出している！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'message', side: as, message: msg });
+    ctx.addEffect({ kind: 'miss', side: as, text: '失敗！', message: msg });
     return;
   }
   const cost = Math.floor(atk.maxHp / 4);
   if (atk.hp <= cost) {
     const msg = `${atk.name}はHPが足りない！みがわりに失敗した！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'message', side: as, message: msg });
+    ctx.addEffect({ kind: 'miss', side: as, text: '失敗！', message: msg });
     return;
   }
   atk.hp -= cost;

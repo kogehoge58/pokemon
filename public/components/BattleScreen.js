@@ -1,5 +1,5 @@
 import { defineComponent, computed } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, enemy, abilityOfPokemon, effectiveness, effText, hpClass, displayedActiveIndex, displayedHp, openModal, api } from '../store.js';
+import { store, enemy, abilityOfPokemon, effectiveness, effText, hpClass, displayedActiveIndex, displayedHp, displayedSubstituteHp, openModal, api } from '../store.js';
 
 export default defineComponent({
   name: 'BattleScreen',
@@ -42,6 +42,13 @@ export default defineComponent({
     const commandChosen = computed(() => {
       if (role.value !== 'A' && role.value !== 'B') return false;
       return !!game.value?.commands?.[role.value];
+    });
+    // 充電中の技（ソーラービーム等）
+    const chargingMyMove = computed(() => {
+      if (role.value !== 'A' && role.value !== 'B') return null;
+      const g = game.value;
+      if (!g) return null;
+      return g.teams?.[role.value]?.[g.active?.[role.value]]?.chargingMove || null;
     });
     const ownWaiting = computed(() => {
       const g = game.value;
@@ -138,20 +145,60 @@ export default defineComponent({
     function isSelectedSwitch() { return selectedCmd.value?.type === 'switch'; }
     function isSelectedSurrender() { return selectedCmd.value?.type === 'surrender'; }
 
-    const STAT_KEYS = [['atk','攻撃'],['def','防御'],['spa','特攻'],['spd','特防'],['spe','素早さ'],['hp','HP']];
+    const STAT_KEYS = [['hp','HP'],['atk','攻撃'],['def','防御'],['spa','特攻'],['spd','特防'],['spe','素早さ']];
 
     return {
-      store, game, data, role, battleMessage, stabWeakTypes, isDisabled, commandChosen, ownWaiting, selectedCmd,
+      store, game, data, role, battleMessage, stabWeakTypes, isDisabled, commandChosen, chargingMyMove, ownWaiting, selectedCmd,
       battleBadge, canSeePartyMon, isFaintVisualReady, animClass, resultClass, stampTone, stampText,
       getShownHp, getActivePokemon, getActiveIndex, statArrows, statVal, statusLabel, movePanelStyle, moveEffText,
       isSelectedFight, isSelectedSwitch, isSelectedSurrender,
       STAT_KEYS, enemy, abilityOfPokemon, hpClass, openModal, api, effectiveness, effText,
-      displayedActiveIndex, displayedHp
+      displayedActiveIndex, displayedHp, displayedSubstituteHp
     };
   },
   template: `
-    <template v-if="game">
-      <!-- バトルフィールド -->
+    <div v-if="game" class="battle-root">
+
+      <!-- 天候・設置技ステータスバー（最上部・3カラム） -->
+      <div class="battle-status-bar panel">
+
+        <!-- 左：プレイヤーA設置技 -->
+        <div class="battle-status-col left">
+          <template v-if="game.hazards?.A?.stealthRock || game.hazards?.A?.spikes > 0 || game.hazards?.A?.stickyWeb">
+            <span class="hazard-side-label">PA</span>
+            <span v-if="game.hazards.A.stealthRock" class="hazard-tag">ステロ</span>
+            <span v-if="game.hazards.A.spikes > 0" class="hazard-tag">まきびし×{{ game.hazards.A.spikes }}</span>
+            <span v-if="game.hazards.A.stickyWeb" class="hazard-tag">ネット</span>
+          </template>
+          <span v-else class="battle-status-empty">—</span>
+        </div>
+
+        <!-- 中央：天候・トリックルーム（両者共通） -->
+        <div class="battle-status-col center">
+          <div v-if="game.weather?.type" class="battle-weather-badge" :class="'weather-' + game.weather.type">
+            {{ { sun:'☀ 晴れ', rain:'🌧 雨', sand:'🌪 砂嵐', hail:'❄ あられ' }[game.weather.type] || game.weather.type }}
+            <span v-if="game.weather.turns > 0" class="weather-turns">残り{{ game.weather.turns }}T</span>
+          </div>
+          <div v-if="game.trickRoom > 0" class="battle-weather-badge" style="background:linear-gradient(135deg,#9c59d1,#6a1fa0)">
+            🔀 トリックルーム <span class="weather-turns">残り{{ game.trickRoom }}T</span>
+          </div>
+          <span v-if="!game.weather?.type && !game.trickRoom" class="battle-status-empty">—</span>
+        </div>
+
+        <!-- 右：プレイヤーB設置技 -->
+        <div class="battle-status-col right">
+          <template v-if="game.hazards?.B?.stealthRock || game.hazards?.B?.spikes > 0 || game.hazards?.B?.stickyWeb">
+            <span v-if="game.hazards.B.stealthRock" class="hazard-tag">ステロ</span>
+            <span v-if="game.hazards.B.spikes > 0" class="hazard-tag">まきびし×{{ game.hazards.B.spikes }}</span>
+            <span v-if="game.hazards.B.stickyWeb" class="hazard-tag">ネット</span>
+            <span class="hazard-side-label">PB</span>
+          </template>
+          <span v-else class="battle-status-empty">—</span>
+        </div>
+
+      </div>
+
+      <!-- バトルフィールド: A | B 横並び -->
       <section class="battlefield">
         <div v-for="s in ['A', 'B']" :key="s" class="side" :class="s.toLowerCase()">
           <template v-if="getActivePokemon(s)">
@@ -190,12 +237,25 @@ export default defineComponent({
                   <div class="types">
                     <type-badge v-for="t in getActivePokemon(s).types" :key="t" :type="t" />
                   </div>
-                  <div class="ability-badge">特性：{{ getActivePokemon(s).ability || abilityOfPokemon(getActivePokemon(s).name) }}</div>
+                  <!-- 自分側のみ特性・持ち物を表示 ※持ち物行は削除禁止・はたきおとすで pokemon.item が null になるので自動で消える -->
+                  <template v-if="role !== 'A' && role !== 'B' || s === role">
+                    <div class="ability-badge">特性：{{ getActivePokemon(s).ability || abilityOfPokemon(getActivePokemon(s).name) }}</div>
+                    <div v-if="getActivePokemon(s).item" class="item-badge">持ち物：{{ getActivePokemon(s).item }}</div>
+                  </template>
                   <div v-if="getActivePokemon(s).status" class="poke-status-badge" :class="'status-' + getActivePokemon(s).status">
                     {{ statusLabel(getActivePokemon(s).status) }}
                   </div>
+                  <!-- みがわりHP表示 -->
+                  <div v-if="displayedSubstituteHp(s, getActiveIndex(s), getActivePokemon(s)) > 0" class="substitute-badge">みがわりHP:{{ displayedSubstituteHp(s, getActiveIndex(s), getActivePokemon(s)) }}</div>
                 </div>
+                <!-- みがわり中はみがわり画像を表示 -->
+                <template v-if="displayedSubstituteHp(s, getActiveIndex(s), getActivePokemon(s)) > 0 && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))">
+                  <span class="sprite substitute-sprite">
+                    <img src="https://play.pokemonshowdown.com/sprites/gen5ani/substitute.gif" alt="みがわり" style="width:96px;height:96px;object-fit:contain" />
+                  </span>
+                </template>
                 <sprite-img
+                  v-else
                   :mon="getActivePokemon(s)"
                   cls="sprite"
                   :fainted="isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))"
@@ -243,9 +303,10 @@ export default defineComponent({
                     <type-badge v-for="t in m.types" :key="t" :type="t" />
                   </div>
                   <div>{{ Math.max(0, displayedHp(s, i, m)) }}/{{ m.maxHp }}</div>
+                  <div v-if="m.status" class="party-status-badge" :class="'status-' + m.status">{{ statusLabel(m.status) }}</div>
                   <button
                     style="margin-top:6px;padding:6px 8px"
-                    @click="openModal('details', { name: m.name, isOpponent: (role === 'A' || role === 'B') ? s !== role : false })"
+                    @click="openModal('details', { name: m.name, item: m.item, ability: m.ability, isOpponent: (role === 'A' || role === 'B') ? s !== role : false })"
                   >詳細</button>
                 </div>
               </template>
@@ -256,32 +317,15 @@ export default defineComponent({
 
       <!-- コマンドパネル -->
       <section class="panel battle-compact-panel">
-        <div class="battle-command-head">
-          <div>
-            <div v-if="battleMessage" class="message-box">{{ battleMessage }}</div>
-            <div v-if="store.playingEffects" class="busy-note">演出中...</div>
-          </div>
-
-          <!-- STAB 弱点通知 -->
-          <template v-if="stabWeakTypes !== null">
-            <div v-if="!stabWeakTypes.length" class="battle-threat-note safe">
-              {{ game.teams[role][displayedActiveIndex(role)]?.name }}は{{ game.teams[enemy(role)][displayedActiveIndex(enemy(role))]?.name }}のタイプ一致技でばつぐん以上をとられていません。
-            </div>
-            <div v-else class="battle-threat-note">
-              {{ game.teams[role][displayedActiveIndex(role)]?.name }}は{{ game.teams[enemy(role)][displayedActiveIndex(enemy(role))]?.name }}の
-              <span class="battle-threat-types">
-                <type-badge v-for="t in stabWeakTypes" :key="t" :type="t" />
-              </span>
-              の技にタイプ一致でばつぐん以上をとられています。
-            </div>
-          </template>
-        </div>
-
         <!-- アクションボタン -->
         <div class="battle-action-row">
           <template v-if="game.winner">
             <button class="primary" @click="api('/reset', {})">もう一度</button>
-            <button @click="openModal('opponentParty')">相手のパーティ</button>
+            <button @click="openModal('battleLog')">バトルログ</button>
+          </template>
+          <!-- 充電中（ソーラービーム等）：コマンド選択不可 -->
+          <template v-else-if="chargingMyMove && !commandChosen">
+            <div class="charging-wait-msg">☀️ 光を集めている... 次のターン発射！</div>
             <button @click="openModal('battleLog')">バトルログ</button>
           </template>
           <template v-else>
@@ -295,10 +339,9 @@ export default defineComponent({
             <button
               :class="{ 'command-selected': isSelectedSwitch() }"
               :disabled="isDisabled || ownWaiting"
-              @click="openModal(game.forceSwitch === role ? 'forceSwitch' : 'switch')"
-            >{{ isSelectedSwitch() ? '✓ ' : '' }}こうかん</button>
+              @click="openModal(game.forceSwitch === role ? 'forceSwitch' : 'pokemon')"
+            >{{ isSelectedSwitch() ? '✓ ' : '' }}ポケモン</button>
 
-            <button @click="openModal('opponentParty')">相手のパーティ</button>
             <button @click="openModal('battleLog')">バトルログ</button>
 
             <button
@@ -310,6 +353,6 @@ export default defineComponent({
           </template>
         </div>
       </section>
-    </template>
+    </div>
   `
 });

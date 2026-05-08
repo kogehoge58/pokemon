@@ -46,7 +46,7 @@ function applyHazardsOnEntry(side, pokemon, ctx) {
     pokemon.hp = Math.max(0, pokemon.hp - dmg);
     const msg = `ステルスロックが ${pokemon.name} に ${dmg} ダメージ！（相性 ${eff}倍）`;
     push(msg);
-    ctx.addEffect({ kind: 'damage', side, hpBefore, hpAfter: pokemon.hp, message: msg });
+    ctx.addEffect({ kind: 'hit', side, targetIndex: g.active[side], hpBefore, hpAfter: pokemon.hp, labels: [{ text: 'ステロ', tone: 'resist', damage: hpBefore - pokemon.hp }], message: msg });
     if (pokemon.hp <= 0 && !pokemon.fainted) {
       pokemon.fainted = true;
       const fm = `${pokemon.name}は気絶した！`;
@@ -59,15 +59,14 @@ function applyHazardsOnEntry(side, pokemon, ctx) {
 
   if (h.spikes > 0) {
     const isFlying = pokemon.types.includes('ひこう') || pokemon.ability === 'ふゆう';
-    const isGround = pokemon.types.includes('じめん');
-    if (!isFlying && !isGround) {
+    if (!isFlying) {
       const ratio = [0, 1 / 8, 1 / 6, 1 / 4][h.spikes] || 1 / 4;
       const dmg = Math.max(1, Math.floor(pokemon.maxHp * ratio));
       const hpBefore = pokemon.hp;
       pokemon.hp = Math.max(0, pokemon.hp - dmg);
       const msg = `まきびしで ${pokemon.name} に ${dmg} ダメージ！`;
       push(msg);
-      ctx.addEffect({ kind: 'damage', side, hpBefore, hpAfter: pokemon.hp, message: msg });
+      ctx.addEffect({ kind: 'hit', side, targetIndex: g.active[side], hpBefore, hpAfter: pokemon.hp, labels: [{ text: 'まきびし', tone: 'resist', damage: hpBefore - pokemon.hp }], message: msg });
       if (pokemon.hp <= 0 && !pokemon.fainted) {
         pokemon.fainted = true;
         const fm = `${pokemon.name}は気絶した！`;

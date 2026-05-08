@@ -4,11 +4,11 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const { TYPES, CHART, MOVES, DEX, ABILITY_DETAILS, ABILITY_BY_POKEMON, POKEAPI_SPRITE_IDS, ITEMS, ITEM_DETAILS } = require('./data.js');
+const { TYPES, CHART, MOVES, DEX, ABILITY_DETAILS, ABILITY_BY_POKEMON, POKEAPI_SPRITE_IDS, ITEMS, ITEM_DETAILS, ITEM_BY_POKEMON } = require('./data.js');
 const { state, enemy } = require('./game/context.js');
 const { makePokemon, abilityOfPokemon, spriteUrlByName } = require('./game/pokemon.js');
 const { doSwitch, resolveTurn } = require('./game/engine.js');
-const { prepareFinalSelectionIfReady, startBattleIfFinalReady } = require('./game/selection.js');
+const { startBattleFromPick } = require('./game/selection.js');
 const { makeHazards } = require('./game/hazards.js');
 
 // スプライトURLをDEXエントリに付加
@@ -16,6 +16,59 @@ Object.keys(DEX).forEach(name => {
   DEX[name].spriteUrl = spriteUrlByName(name);
   DEX[name].spriteEmoji = DEX[name].sprite;
 });
+
+// --- パーティ管理 ---
+const PARTIES_FILE = path.join(__dirname, 'parties.json');
+const VALID_USERS = ['ひびき', 'くさの', 'かいと'];
+
+function makeEmptyUserParties() {
+  return {
+    active: 0,
+    parties: [
+      { name: 'パーティ1', pokemon: [] },
+      { name: 'パーティ2', pokemon: [] },
+      { name: 'パーティ3', pokemon: [] },
+    ],
+  };
+}
+
+function loadParties() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(PARTIES_FILE, 'utf8'));
+    let migrated = false;
+    const result = {};
+    for (const user of VALID_USERS) {
+      if (!raw[user]) {
+        result[user] = makeEmptyUserParties();
+        migrated = true;
+      } else if (Array.isArray(raw[user])) {
+        // 旧形式（フラット配列）→ 新形式に自動移行
+        const newEntry = makeEmptyUserParties();
+        if (raw[user].length === 6) {
+          newEntry.parties[0] = { name: 'パーティ1', pokemon: raw[user] };
+        }
+        result[user] = newEntry;
+        migrated = true;
+      } else {
+        result[user] = raw[user];
+      }
+    }
+    if (migrated) saveParties(result);
+    return result;
+  } catch {
+    return { ひびき: makeEmptyUserParties(), くさの: makeEmptyUserParties(), かいと: makeEmptyUserParties() };
+  }
+}
+
+function getActivePartyPokemon(parties, user) {
+  const u = parties[user];
+  if (!u || !u.parties) return [];
+  const slot = u.parties[u.active ?? 0];
+  return slot?.pokemon || [];
+}
+function saveParties(parties) {
+  fs.writeFileSync(PARTIES_FILE, JSON.stringify(parties, null, 2), 'utf8');
+}
 
 function notify() {
   state.version++;
@@ -29,21 +82,20 @@ function notify() {
 function resetGame(closePopups = false) {
   const nextPopupCloseId = closePopups ? ++state.popupCloseSeq : state.popupCloseSeq;
   state.game = {
-    mode: 'select',
+    mode: 'entry',
+    entries: { A: null, B: null },
+    pickPool: { A: [], B: [] },
     selected: { A: [], B: [] },
     confirmed: { A: false, B: false },
-    finalPool: { A: [], B: [] },
-    finalSelected: { A: [], B: [] },
-    finalConfirmed: { A: false, B: false },
     turn: 1,
     teams: { A: [], B: [] },
     active: { A: 0, B: 0 },
     commands: { A: null, B: null },
     popupCloseId: nextPopupCloseId,
     forceSwitch: null,
-    log: ['対戦ルームを作成しました。プレイヤーA/Bを選んでください。'],
+    log: ['対戦ルームを作成しました。エントリーしてください。'],
     winner: null,
-    message: 'プレイヤーA/Bがそれぞれ3体選出してください。',
+    message: 'ひびき/くさの/かいとが接続設定からエントリーしてください。',
     revealed: { A: [false, false, false], B: [false, false, false] },
     effects: [],
     effectId: 0,
@@ -67,7 +119,7 @@ function sendJson(res, status, obj) {
 }
 function validSide(s) { return s === 'A' || s === 'B'; }
 
-const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.gif': 'image/gif', '.png': 'image/png' };
+const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.gif': 'image/gif', '.png': 'image/png', '.mp3': 'audio/mpeg' };
 
 resetGame();
 
@@ -75,7 +127,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
 
   if (req.method === 'GET' && url.pathname === '/data') {
-    return sendJson(res, 200, { TYPES, CHART, MOVES, DEX, ABILITY_DETAILS, ABILITY_BY_POKEMON, POKEAPI_SPRITE_IDS, ITEMS, ITEM_DETAILS });
+    return sendJson(res, 200, { TYPES, CHART, MOVES, DEX, ABILITY_DETAILS, ABILITY_BY_POKEMON, POKEAPI_SPRITE_IDS, ITEMS, ITEM_DETAILS, ITEM_BY_POKEMON });
   }
 
   if (req.method === 'GET' && url.pathname === '/state') {
@@ -96,10 +148,28 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // パーティ一覧取得
+  if (req.method === 'GET' && url.pathname === '/parties') {
+    return sendJson(res, 200, loadParties());
+  }
+
+  // バトルBGMリスト取得（汎用GETより前に処理）
+  if (req.method === 'GET' && url.pathname === '/battle-bgm-list') {
+    try {
+      const dir = path.join(__dirname, 'music', 'battle');
+      const files = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.mp3')).sort();
+      return sendJson(res, 200, { files });
+    } catch {
+      return sendJson(res, 200, { files: [] });
+    }
+  }
+
   if (req.method === 'GET') {
     const filePath = url.pathname === '/'
       ? path.join(__dirname, 'public', 'index.html')
-      : path.join(__dirname, 'public', url.pathname);
+      : url.pathname.startsWith('/music/')
+        ? path.join(__dirname, 'music', decodeURIComponent(url.pathname.slice('/music/'.length)))
+        : path.join(__dirname, 'public', url.pathname);
     try {
       const content = fs.readFileSync(filePath);
       const ext = path.extname(filePath);
@@ -124,9 +194,96 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { version: state.version, game: state.game });
     }
 
+    // BGM保存
+    if (url.pathname === '/save-bgm') {
+      const { user, bgm } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      const parties = loadParties();
+      if (!parties[user]) parties[user] = makeEmptyUserParties();
+      parties[user].bgm = bgm || null;
+      saveParties(parties);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // パーティ保存
+    if (url.pathname === '/save-party') {
+      const { user, slotIndex, name, pokemon } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      const si = Number(slotIndex);
+      if (!Number.isInteger(si) || si < 0 || si > 2) return sendJson(res, 400, { error: 'スロット番号が不正です' });
+      if (!pokemon.every(n => DEX[n])) return sendJson(res, 400, { error: '図鑑に存在しないポケモンが含まれています' });
+      if (pokemon.length === 6 && new Set(pokemon).size !== 6) return sendJson(res, 400, { error: '同じポケモンを重複登録できません' });
+      const parties = loadParties();
+      if (!parties[user] || !parties[user].parties) parties[user] = makeEmptyUserParties();
+      parties[user].parties[si] = { name: name || `パーティ${si + 1}`, pokemon };
+      saveParties(parties);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // アクティブパーティ変更
+    if (url.pathname === '/set-active-party') {
+      const { user, slotIndex } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      const si = Number(slotIndex);
+      if (!Number.isInteger(si) || si < 0 || si > 2) return sendJson(res, 400, { error: 'スロット番号が不正です' });
+      const parties = loadParties();
+      if (!parties[user] || !parties[user].parties) parties[user] = makeEmptyUserParties();
+      parties[user].active = si;
+      saveParties(parties);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // 離席
+    if (url.pathname === '/leave') {
+      const { user } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      if (g.mode !== 'entry') return sendJson(res, 400, { error: 'エントリー期間外です' });
+      for (const side of ['A', 'B']) {
+        if (g.entries[side] === user) {
+          g.entries[side] = null;
+          g.pickPool[side] = [];
+        }
+      }
+      g.message = `${user}が離席しました。`;
+      g.log.push(`${user}が離席しました。`);
+      notify();
+      return sendJson(res, 200, { version: state.version, game: g });
+    }
+
+    // エントリー
+    if (url.pathname === '/enter') {
+      const { user, side, partyIndex } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      if (!validSide(side)) return sendJson(res, 400, { error: 'サイドが不正です' });
+      if (g.mode !== 'entry') return sendJson(res, 400, { error: 'エントリー期間外です' });
+      const parties = loadParties();
+      const userParties = parties[user];
+      const pi = (partyIndex !== undefined && partyIndex !== null) ? Number(partyIndex) : (userParties?.active ?? 0);
+      const slot = userParties?.parties?.[pi];
+      const activePokemon = slot?.pokemon || [];
+      if (activePokemon.length !== 6) return sendJson(res, 400, { error: `選択したパーティに6体登録されていません。パーティ登録画面で登録してください。` });
+      const otherSide = side === 'A' ? 'B' : 'A';
+      if (g.entries[otherSide] === user) return sendJson(res, 400, { error: `${user}は既にプレイヤー${otherSide}としてエントリー済みです` });
+      if (g.entries[side] && g.entries[side] !== user) return sendJson(res, 400, { error: `プレイヤー${side}は既に${g.entries[side]}がエントリー済みです` });
+      g.entries[side] = user;
+      g.pickPool[side] = [...activePokemon];
+      g.log.push(`${user}がプレイヤー${side}としてエントリーしました。`);
+      if (g.entries.A && g.entries.B) {
+        g.mode = 'pick';
+        g.message = '両プレイヤーがエントリーしました。相手の6体を見ながら、自分の3体を選出してください。';
+        g.log.push('エントリー完了。選出フェーズへ移行します。');
+      } else {
+        g.message = `${user}がプレイヤー${side}としてエントリーしました。相手のエントリーを待っています。`;
+      }
+      notify();
+      return sendJson(res, 200, { version: state.version, game: g });
+    }
+
+    // 選出ピック
     if (url.pathname === '/pick') {
       const { side, name } = body;
-      if (!validSide(side) || !DEX[name] || g.mode !== 'select' || g.confirmed[side]) return sendJson(res, 400, { error: '選択できません' });
+      if (!validSide(side) || g.mode !== 'pick' || g.confirmed[side]) return sendJson(res, 400, { error: '選択できません' });
+      if (!g.pickPool[side].includes(name)) return sendJson(res, 400, { error: 'そのポケモンはパーティにいません' });
       if (!g.selected[side].includes(name) && g.selected[side].length < 3) g.selected[side].push(name);
       g.log.push(`プレイヤー${side}が ${g.selected[side].length}体目を選択しました。`);
       notify(); return sendJson(res, 200, { version: state.version, game: g });
@@ -134,14 +291,14 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/remove-pick') {
       const { side, index } = body;
-      if (!validSide(side) || g.mode !== 'select' || g.confirmed[side]) return sendJson(res, 400, { error: '外せません' });
+      if (!validSide(side) || g.mode !== 'pick' || g.confirmed[side]) return sendJson(res, 400, { error: '外せません' });
       g.selected[side].splice(index, 1);
       notify(); return sendJson(res, 200, { version: state.version, game: g });
     }
 
     if (url.pathname === '/reorder-pick') {
       const { side, from, to } = body;
-      if (!validSide(side) || g.mode !== 'select' || g.confirmed[side]) return sendJson(res, 400, { error: '順番変更できません' });
+      if (!validSide(side) || g.mode !== 'pick' || g.confirmed[side]) return sendJson(res, 400, { error: '順番変更できません' });
       const list = g.selected[side];
       const f = Number(from), t = Number(to);
       if (!Number.isInteger(f) || !Number.isInteger(t) || f < 0 || t < 0 || f >= list.length || t >= list.length) return sendJson(res, 400, { error: '順番変更できません' });
@@ -152,56 +309,12 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/confirm') {
       const { side } = body;
-      if (!validSide(side) || g.mode !== 'select' || g.selected[side].length !== 3) return sendJson(res, 400, { error: '3体選んでください' });
+      if (!validSide(side) || g.mode !== 'pick' || g.selected[side].length !== 3) return sendJson(res, 400, { error: '3体選んでください' });
       g.confirmed[side] = true;
       g.log.push(`プレイヤー${side}の選出が確定しました。`);
       if (g.confirmed.A && g.confirmed.B) {
-        g.mode = 'preparingFinal';
-        g.message = '読み込み中... 最終選出画面を準備しています。';
-        notify();
-        setTimeout(() => {
-          if (state.game && state.game.mode === 'preparingFinal') {
-            prepareFinalSelectionIfReady();
-            notify();
-          }
-        }, 700);
-        return sendJson(res, 200, { version: state.version, game: g });
+        startBattleFromPick();
       }
-      notify(); return sendJson(res, 200, { version: state.version, game: g });
-    }
-
-    if (url.pathname === '/final-pick') {
-      const { side, name } = body;
-      if (!validSide(side) || g.mode !== 'final' || g.finalConfirmed[side] || !g.finalPool[side].includes(name)) return sendJson(res, 400, { error: '最終選出できません' });
-      if (!g.finalSelected[side].includes(name) && g.finalSelected[side].length < 3) g.finalSelected[side].push(name);
-      g.log.push(`プレイヤー${side}が最終選出 ${g.finalSelected[side].length}体目を選択しました。`);
-      notify(); return sendJson(res, 200, { version: state.version, game: g });
-    }
-
-    if (url.pathname === '/final-remove-pick') {
-      const { side, index } = body;
-      if (!validSide(side) || g.mode !== 'final' || g.finalConfirmed[side]) return sendJson(res, 400, { error: '外せません' });
-      g.finalSelected[side].splice(index, 1);
-      notify(); return sendJson(res, 200, { version: state.version, game: g });
-    }
-
-    if (url.pathname === '/final-reorder-pick') {
-      const { side, from, to } = body;
-      if (!validSide(side) || g.mode !== 'final' || g.finalConfirmed[side]) return sendJson(res, 400, { error: '順番変更できません' });
-      const list = g.finalSelected[side];
-      const f = Number(from), t = Number(to);
-      if (!Number.isInteger(f) || !Number.isInteger(t) || f < 0 || t < 0 || f >= list.length || t >= list.length) return sendJson(res, 400, { error: '順番変更できません' });
-      const [item] = list.splice(f, 1);
-      list.splice(t, 0, item);
-      notify(); return sendJson(res, 200, { version: state.version, game: g });
-    }
-
-    if (url.pathname === '/final-confirm') {
-      const { side } = body;
-      if (!validSide(side) || g.mode !== 'final' || g.finalSelected[side].length !== 3) return sendJson(res, 400, { error: '最終選出を3体選んでください' });
-      g.finalConfirmed[side] = true;
-      g.log.push(`プレイヤー${side}の最終選出が確定しました。`);
-      startBattleIfFinalReady();
       notify(); return sendJson(res, 200, { version: state.version, game: g });
     }
 
@@ -216,6 +329,15 @@ const server = http.createServer(async (req, res) => {
       if (cmd.type === 'switch' && (cmd.index === g.active[side] || !g.teams[side][cmd.index] || g.teams[side][cmd.index].fainted)) return sendJson(res, 400, { error: 'そのポケモンには交代できません' });
       g.commands[side] = cmd;
       g.log.push(`プレイヤー${side}がコマンドを選択しました。`);
+      // 充電中（ソーラービーム等）のポケモンのコマンドを自動設定
+      for (const s of ['A', 'B']) {
+        if (!g.commands[s]) {
+          const mon = g.teams[s][g.active[s]];
+          if (mon && mon.chargingMove && !mon.fainted) {
+            g.commands[s] = { type: 'move', moveName: mon.chargingMove };
+          }
+        }
+      }
       if (g.commands.A && g.commands.B) {
         g.popupCloseId = ++state.popupCloseSeq;
         resolveTurn();
@@ -232,7 +354,9 @@ const server = http.createServer(async (req, res) => {
       const { resetVolatileStats } = require('./game/pokemon.js');
       const { triggerOnEntry } = require('./game/abilities.js');
       const { triggerItemOnEntry } = require('./game/items.js');
-      const { nextTurn } = require('./game/engine.js');
+      const { applyHazardsOnEntry } = require('./game/hazards.js');
+      const { nextTurn, resumeAfterPivot } = require('./game/engine.js');
+      const fsCtx = { state, enemy, active, addEffect };
       startEffects();
       const fromIndex = g.active[side];
       addEffect({ kind: 'switch', side, fromIndex, toIndex: index, message: '交換' });
@@ -242,9 +366,14 @@ const server = http.createServer(async (req, res) => {
       const fsMsg = `プレイヤー${side}は ${active(side).name} を繰り出した！`;
       g.log.push(fsMsg);
       addEffect({ kind: 'message', side, message: fsMsg });
-      triggerOnEntry(side, { state, enemy, active, addEffect });
-      triggerItemOnEntry(side, { state, enemy, active, addEffect });
-      nextTurn();
+      triggerOnEntry(side, fsCtx);
+      triggerItemOnEntry(side, fsCtx);
+      applyHazardsOnEntry(side, active(side), fsCtx);
+      if (g._resumeActions?.length) {
+        resumeAfterPivot();
+      } else {
+        nextTurn();
+      }
       finishEffects();
       notify(); return sendJson(res, 200, { version: state.version, game: g });
     }

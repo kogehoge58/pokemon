@@ -42,7 +42,7 @@ function applyWeatherEndOfTurn(ctx) {
       pokemon.hp = Math.max(0, pokemon.hp - dmg);
       const msg = `${pokemon.name}はすなあらしのダメージを受けた！ (-${dmg})`;
       g.log.push(msg);
-      ctx.addEffect({ kind: 'damage', side, hpBefore, hpAfter: pokemon.hp, message: msg });
+      ctx.addEffect({ kind: 'damage', side, hpBefore, hpAfter: pokemon.hp, targetIndex: g.active[side], labels: [{ text: 'すなあらし', tone: 'ability-blue' }], message: msg });
       if (pokemon.hp <= 0 && !pokemon.fainted) {
         pokemon.fainted = true;
         const fm = `${pokemon.name}は気絶した！`;

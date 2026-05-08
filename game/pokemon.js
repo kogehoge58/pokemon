@@ -1,6 +1,6 @@
 'use strict';
 
-const { DEX, ABILITY_BY_POKEMON } = require('../data.js');
+const { DEX, ABILITY_BY_POKEMON, MOVES, ITEM_BY_POKEMON } = require('../data.js');
 
 const POKEAPI_SPRITE_BASE = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated';
 
@@ -22,6 +22,8 @@ function makePokemon(name) {
     spd: Math.floor(((2 * d.stats.spd + 31) * 50) / 100) + 5,
     spe: Math.floor(((2 * d.stats.spe + 31) * 50) / 100) + 5,
   };
+  // ヌケニンのHPは常に1（ふしぎなまもりを持つ）
+  if (name === 'ヌケニン') battleStats.hp = 1;
   return {
     name,
     sprite: d.sprite,
@@ -30,7 +32,7 @@ function makePokemon(name) {
     spriteEmoji: d.spriteEmoji || d.sprite,
     types: [...d.types],
     ability: abilityOfPokemon(name),
-    item: null,
+    item: (ITEM_BY_POKEMON && ITEM_BY_POKEMON[name]) || null,
     stats: { ...battleStats },
     rawStats: { ...battleStats },
     baseStats: { ...d.stats },
@@ -38,6 +40,7 @@ function makePokemon(name) {
     statStages: { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, acc: 0, eva: 0 },
     statColors: {},
     moves: [...d.moves],
+    movePP: Object.fromEntries(d.moves.map(mn => [mn, MOVES[mn]?.pp || 20])),
     maxHp: battleStats.hp,
     hp: battleStats.hp,
     fainted: false,
@@ -84,6 +87,18 @@ function accStageMultiplier(stage) {
 
 function resetVolatileStats(p) {
   if (!p || !p.rawStats) return;
+  // かわりもの変身リセット（引いたら元のメタモンに戻る）
+  if (p._originalData) {
+    const o = p._originalData;
+    p.sprite = o.sprite; p.spriteUrl = o.spriteUrl;
+    p.staticSpriteUrl = o.staticSpriteUrl; p.spriteEmoji = o.spriteEmoji;
+    p.types = [...o.types];
+    p.ability = o.ability;
+    p.moves = [...o.moves]; p.movePP = { ...o.movePP };
+    p.rawStats = { ...o.rawStats }; p.baseStats = { ...o.baseStats };
+    p.displayStats = { ...o.displayStats };
+    p.transformed = false;
+  }
   p.stats = { ...p.rawStats };
   p.displayStats = { ...p.baseStats };
   p.statStages = { atk: 0, def: 0, spa: 0, spd: 0, spe: 0, acc: 0, eva: 0 };

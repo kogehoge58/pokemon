@@ -110,4 +110,29 @@ function startBattleIfFinalReady() {
   finishEffects();
 }
 
-module.exports = { chooseCoverageAdds, prepareFinalSelectionIfReady, startBattleIfFinalReady };
+function startBattleFromPick() {
+  const g = state.game;
+  g.teams.A = g.selected.A.map(makePokemon);
+  g.teams.B = g.selected.B.map(makePokemon);
+  g.mode = 'battle';
+  g.turn = 1;
+  g.active = { A: 0, B: 0 };
+  g.commands = { A: null, B: null };
+  g.popupCloseId = state.popupCloseSeq;
+  g.forceSwitch = null;
+  g.revealed = { A: [true, false, false], B: [true, false, false] };
+  g.effects = [];
+  g.effectId = 0;
+  g.winner = null;
+  g.log.push('両プレイヤーの選出が完了。バトル開始！');
+  g.message = '1ターン目。両プレイヤーのコマンド選択待ちです。';
+
+  startEffects();
+  triggerOnEntry('A', ctx);
+  triggerItemOnEntry('A', ctx);
+  triggerOnEntry('B', ctx);
+  triggerItemOnEntry('B', ctx);
+  finishEffects();
+}
+
+module.exports = { chooseCoverageAdds, prepareFinalSelectionIfReady, startBattleIfFinalReady, startBattleFromPick };

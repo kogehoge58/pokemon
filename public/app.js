@@ -1,33 +1,54 @@
-import { createApp, computed } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, openModal, api, loadData, loadState } from './store.js';
+import { createApp, computed, ref } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
+import { store, openModal, api, loadData, loadState, fetchParties, setUserName, playBgm } from './store.js';
 import SelectScreen from './components/SelectScreen.js';
-import FinalScreen from './components/FinalScreen.js';
 import BattleScreen from './components/BattleScreen.js';
 import ModalLayer from './components/ModalLayer.js';
+import PartyScreen from './components/PartyScreen.js';
+
+const VALID_USERS = ['ひびき', 'くさの', 'かいと'];
 
 const app = createApp({
   setup() {
     const game = computed(() => store.game);
     const mode = computed(() => game.value?.mode || '');
-    const rolePill = computed(() => {
-      if (!store.role) return 'あなたは未選択です';
-      return `あなたはプレイヤー${store.role}です`;
+
+    // ログイン中ユーザーのエントリー状況（'A'/'B'/''）
+    const entryStatus = computed(() => {
+      const g = game.value;
+      if (!g || !store.userName) return '';
+      if (g.entries?.A === store.userName) return 'A';
+      if (g.entries?.B === store.userName) return 'B';
+      return '';
     });
 
-    return { store, game, mode, rolePill, openModal, api };
+    function openEntryOrLogin() {
+      openModal(store.userName ? 'entry' : 'login');
+    }
+
+    function doLogin(name) {
+      setUserName(name);
+      store.showPartyScreen = true;
+      playBgm('ポケモンセンター.mp3');
+    }
+
+    return { store, game, mode, entryStatus, openModal, openEntryOrLogin, doLogin, api, VALID_USERS };
   },
   template: `
     <div class="app">
-      <!-- ヘッダー -->
-      <header>
-        <div>
-          <h1>簡易ポケモンバトル</h1>
-          <div class="small">3体選出 / タイプ相性 / 種族値ベース / 交換あり / アイテムなし</div>
+      <!-- ヘッダー（ログイン済みのときのみ表示） -->
+      <header v-if="store.userName">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div class="header-title">⚔️ ポケモンバトル</div>
+          <span class="header-login-label">{{ store.userName }}でログイン中</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
-          <button @click="openModal('typeChart')">タイプ相性</button>
-          <button @click="openModal('connectionSettings')">接続設定</button>
-          <span class="role-pill">{{ rolePill }}</span>
+          <button @click="openModal('typeChart')">辞書</button>
+          <template v-if="store.showPartyScreen">
+            <button :class="entryStatus ? 'primary command-selected' : 'primary'" @click="openEntryOrLogin()">{{ entryStatus ? 'P' + entryStatus + ' エントリー中' : 'エントリー' }}</button>
+          </template>
+          <template v-if="mode !== 'battle' && mode !== 'pick' && !store.showPartyScreen">
+            <button @click="store.showPartyScreen = true">パーティ登録</button>
+          </template>
           <button class="primary" @click="api('/reset', {})">リセット</button>
         </div>
       </header>
@@ -40,19 +61,55 @@ const app = createApp({
         </div>
       </div>
 
+      <!-- ログイン画面 -->
+      <div v-else-if="!store.userName" class="login-screen">
+        <div class="login-card">
+          <div class="login-title">🎮 ポケモンバトル</div>
+          <div class="login-subtitle">ログインしてください</div>
+          <div class="login-buttons">
+            <button
+              v-for="u in VALID_USERS" :key="u"
+              class="primary login-btn"
+              @click="doLogin(u)"
+            >{{ u }}</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- パーティ登録画面 -->
+      <party-screen v-else-if="store.showPartyScreen" />
+
       <!-- メインコンテンツ -->
-      <main v-if="store.masterData && game">
-        <select-screen v-if="mode === 'select'" />
-        <final-screen v-else-if="mode === 'final'" />
+      <main v-else>
+        <select-screen v-if="mode === 'pick'" />
         <battle-screen v-else-if="mode === 'battle'" />
-        <div v-else class="panel" style="text-align:center;padding:40px">
-          <div class="loading-spinner" style="margin-bottom:12px"></div>
-          <div>ゲーム読み込み中...</div>
+        <div v-else class="panel" style="text-align:center;padding:60px 40px;color:#666">
+          <div style="font-size:48px;margin-bottom:16px">⚔️</div>
+          <div style="font-size:16px;font-weight:700;margin-bottom:8px">エントリーを待っています</div>
+          <div class="small">ヘッダーの「エントリー」ボタンから着席してください</div>
         </div>
       </main>
 
       <!-- モーダルレイヤー -->
-      <modal-layer v-if="store.masterData" />
+      <modal-layer v-if="store.masterData && store.userName" />
+
+      <!-- 天候オーバーレイ -->
+      <div v-if="mode === 'battle' && game?.weather?.type"
+           :class="'weather-overlay weather-' + game.weather.type"></div>
+
+      <!-- バトル開始演出オーバーレイ -->
+      <div v-if="store.battleStartAnim" class="battle-start-overlay">
+        <div class="battle-start-bg-lines"></div>
+        <div class="battle-start-content">
+          <div class="battle-start-players">
+            <span class="battle-start-player-name">{{ store.game?.entries?.A || '？' }}</span>
+            <span class="battle-start-vs-badge">VS</span>
+            <span class="battle-start-player-name">{{ store.game?.entries?.B || '？' }}</span>
+          </div>
+          <div class="battle-start-divider"></div>
+          <div class="battle-start-main-text">バトル開始！</div>
+        </div>
+      </div>
     </div>
   `
 });
@@ -65,6 +122,7 @@ app.component('sprite-img', {
     mon: Object,
     cls: { type: String, default: 'sprite' },
     fainted: { type: Boolean, default: false },
+    substitute: { type: Boolean, default: false },
   },
   setup(props) {
     function getUrl() {
@@ -103,10 +161,13 @@ app.component('type-badge', {
 });
 
 app.component('SelectScreen', SelectScreen);
-app.component('FinalScreen', FinalScreen);
 app.component('BattleScreen', BattleScreen);
 app.component('ModalLayer', ModalLayer);
+app.component('PartyScreen', PartyScreen);
 
 app.mount('#app');
 
-loadData().then(() => loadState());
+loadData().then(() => {
+  loadState();
+  fetchParties();
+});

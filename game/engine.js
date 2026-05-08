@@ -11,6 +11,14 @@ const NON_CONTACT_PHYSICAL = new Set([
 
 // こだわり系アイテム
 const CHOICE_ITEMS = new Set(['こだわりスカーフ', 'こだわりメガネ', 'こだわりハチマキ']);
+
+// みがわりでブロックされる変化技
+const SUB_BLOCKED_STATUS_MOVES = new Set([
+  'でんじは', 'どくどく', 'あくび', 'ちょうはつ', 'アンコール',
+  'キノコのほうし', 'ねむりごな', 'あくまのキッス', 'こんらんこうせん',
+  'うたう', 'いばる', 'どろかけ', 'こうそくいどう',
+  'とおせんぼ', 'くろいまなざし', 'さいみんじゅつ', 'でんじほう',
+]);
 const { state, enemy, active, addEffect, startEffects, finishEffects, effectiveness, effText } = require('./context.js');
 const { resetVolatileStats, accStageMultiplier } = require('./pokemon.js');
 const {
@@ -65,6 +73,7 @@ function doSwitch(s, i, triggerEntry = true) {
   state.game.log.push(`プレイヤー${s}は ${beforeMon.name} を引っ込めた！`);
   addEffect({ kind: 'message', side: s, message: `プレイヤー${s}は ${beforeMon.name} を引っ込めた！` });
   resetVolatileStats(beforeMon);
+  beforeMon.chargingMove = null;  // 溜め技リセット
 
   // さいせいりょく：引っ込む時にHP1/3回復
   if (beforeMon.ability === 'さいせいりょく' && !beforeMon.fainted && beforeMon.hp < beforeMon.maxHp) {
@@ -121,7 +130,7 @@ function doConfusionSelfHurt(side) {
   p.hp = Math.max(0, p.hp - dmg);
   const msg = `${p.name}は混乱して自分を傷つけた！ (-${dmg})`;
   state.game.log.push(msg);
-  addEffect({ kind: 'damage', side, hpBefore, hpAfter: p.hp, message: msg });
+  addEffect({ kind: 'damage', side, hpBefore, hpAfter: p.hp, targetIndex: state.game.active[side], labels: [{ text: 'こんらん', tone: 'ability-red' }], message: msg });
   if (p.hp <= 0 && !p.fainted) {
     p.fainted = true;
     const fm = `${p.name}は気絶した！`;
@@ -143,6 +152,11 @@ function doAttack(s, moveName, isLastMove) {
   const m = MOVES[moveName];
   if (!atk || !def || atk.fainted || g.winner) return;
 
+  // PPを消費（0未満にはならない）
+  if (atk.movePP && atk.movePP[moveName] !== undefined) {
+    atk.movePP[moveName] = Math.max(0, atk.movePP[moveName] - 1);
+  }
+
   if (moveName !== 'みちづれ') atk.destinyBond = false;
 
   const weather = g.weather?.type || null;
@@ -154,7 +168,7 @@ function doAttack(s, moveName, isLastMove) {
     addEffect({ kind: 'attack', side: s, moveName, message: attackMsg });
     const protMsg = `${def.name}は身を守っている！`;
     g.log.push(protMsg);
-    addEffect({ kind: 'miss', side: defSide, message: protMsg });
+    addEffect({ kind: 'ability', side: defSide, ability: 'まもる', labels: [{ text: '守った！', tone: 'ability-blue' }], message: protMsg });
     atk.lastMoveUsed = moveName;
     return;
   }
@@ -200,7 +214,7 @@ function doAttack(s, moveName, isLastMove) {
       addEffect({ kind: 'attack', side: s, moveName, message: attackMsg });
       const noEffMsg = `${def.name}には効果がない...`;
       g.log.push(noEffMsg);
-      addEffect({ kind: 'miss', side: defSide, message: noEffMsg });
+      addEffect({ kind: 'miss', side: defSide, text: '効果なし', message: noEffMsg });
       atk.lastMoveUsed = moveName;
       return;
     }
@@ -212,7 +226,7 @@ function doAttack(s, moveName, isLastMove) {
     addEffect({ kind: 'attack', side: s, moveName, message: attackMsg });
     const noEffMsg = `${def.name}には効果がない...`;
     g.log.push(noEffMsg);
-    addEffect({ kind: 'miss', side: defSide, message: noEffMsg });
+    addEffect({ kind: 'miss', side: defSide, text: '効果なし', message: noEffMsg });
     atk.lastMoveUsed = moveName;
     return;
   }
@@ -283,7 +297,8 @@ function doAttack(s, moveName, isLastMove) {
   const defAbility = getDefenderMult(def, eff);
   const atkItem = getItemAttackerMult(atk, m);
   const defItem = getItemDefenderMult(def, m);
-  const abilityMultiplier = atkAbility.mult * defAbility.mult * atkItem.mult * defItem.mult;
+  const baseAbilityMult = atkAbility.mult * atkItem.mult * defItem.mult; // defAbility除く
+  const abilityMultiplier = baseAbilityMult * defAbility.mult;
 
   // 多段ヒット数決定
   const MULTI_HIT_2 = new Set(['ダブルウイング']);
@@ -293,13 +308,26 @@ function doAttack(s, moveName, isLastMove) {
     ? (MULTI_HIT_2.has(moveName) ? 2 : (atk.ability === 'スキルリンク' ? 5 : [2, 2, 3, 3, 4, 5][Math.floor(Math.random() * 6)]))
     : 1;
 
-  // ダメージ計算ヘルパー（乱数ごとに呼ぶ）
-  const computeDmg = (r) => {
+  // ダメージ計算ヘルパー（乱数・per-hitのdefAbility倍率を受け取る）
+  const computeDmg = (r, perHitTotalMult) => {
     if (fixedDmg !== null) return fixedDmg;
-    let d = Math.floor(((((22 * effectivePower * atkStat / defStat) / 50) + 2) * stab * eff * r) * critical * abilityMultiplier * burnMult * weatherMult * drySkinFireMult * thickFatMult);
-    if (d < 1 && eff > 0) d = 1;
+    const totalMult = perHitTotalMult !== undefined ? perHitTotalMult : abilityMultiplier;
+    if (totalMult === 0) return 0;
+    let d = Math.floor(((((22 * effectivePower * atkStat / defStat) / 50) + 2) * stab * eff * r) * critical * totalMult * burnMult * weatherMult * drySkinFireMult * thickFatMult);
+    if (d < 1 && eff > 0 && totalMult > 0) d = 1;
     return d;
   };
+
+  // ふしぎなまもり：効果抜群でない技は完全無効（0ダメージ）→ 早期リターン
+  if (defAbility.mult === 0) {
+    addEffect({ kind: 'attack', side: s, moveName, message: attackMsg, abilityLabels: atkAbility.labels });
+    for (const msg of [...atkAbility.logs, ...defAbility.logs]) g.log.push(msg);
+    const noEffMsg = `${def.name}のふしぎなまもり！ 効果がない！`;
+    g.log.push(noEffMsg);
+    addEffect({ kind: 'ability', side: defSide, ability: 'ふしぎなまもり', labels: defAbility.labels, message: noEffMsg });
+    atk.lastMoveUsed = moveName;
+    return;
+  }
 
   const firstRandom = fixedDmg === null ? (Math.floor(Math.random() * 16) + 85) / 100 : 1;
   let firstDmg = computeDmg(firstRandom);
@@ -339,12 +367,8 @@ function doAttack(s, moveName, isLastMove) {
   addEffect({ kind: 'attack', side: s, moveName, message: attackMsg, abilityLabels: abilityAttackLabels });
   for (const msg of abilityLogs) g.log.push(msg);
 
-  // カウンター/ミラーコート用ダメージ記録
-  if (m.category === '物理') def.lastMoveDamage.physical = firstDmg * hitCount;
-  if (m.category === '特殊') def.lastMoveDamage.special = firstDmg * hitCount;
-
-  // みがわりチェック（固定ダメージ技・すりぬけは貫通）
-  if (def.substitute > 0 && fixedDmg === null && atk.ability !== 'すりぬけ') {
+  // みがわりチェック（すりぬけは貫通）
+  if (def.substitute > 0 && atk.ability !== 'すりぬけ') {
     const subTotalDmg = firstDmg * hitCount;
     def.substitute = Math.max(0, def.substitute - subTotalDmg);
     const subMsg = `${def.name}のみがわりに ${subTotalDmg} ダメージ！`;
@@ -354,12 +378,16 @@ function doAttack(s, moveName, isLastMove) {
       def.substitute = 0;
       const bkMsg = `${def.name}のみがわりが壊れた！`;
       g.log.push(bkMsg);
-      addEffect({ kind: 'message', side: defSide, message: bkMsg });
+      addEffect({ kind: 'substitute-break', side: defSide, targetIndex: g.active[defSide], message: bkMsg });
     }
     if (!atk.fainted && m.power > 0) applyLifeOrbRecoil(atk, s, ctx);
     atk.lastMoveUsed = moveName;
     return;
   }
+
+  // カウンター/ミラーコート用ダメージ記録（みがわりがない場合のみ）
+  if (m.category === '物理') def.lastMoveDamage.physical = firstDmg * hitCount;
+  if (m.category === '特殊') def.lastMoveDamage.special = firstDmg * hitCount;
 
   // ダメージ適用ループ（多段ヒット対応）
   let totalDmg = 0;
@@ -367,16 +395,26 @@ function doAttack(s, moveName, isLastMove) {
 
   for (let hi = 0; hi < hitCount; hi++) {
     if (def.hp <= 0 || g.winner) break;
+    // マルチスケイル: ヒットごとに再評価（HPが最大でなくなったら発動しない）
+    let perHitTotalMult;
+    if (hi === 0) {
+      perHitTotalMult = abilityMultiplier;
+    } else {
+      const perHitDefAbility = getDefenderMult(def, eff);
+      perHitTotalMult = baseAbilityMult * perHitDefAbility.mult;
+    }
     const hitRandom = (hi > 0 && fixedDmg === null) ? (Math.floor(Math.random() * 16) + 85) / 100 : null;
-    const hitDmg = hitRandom !== null ? computeDmg(hitRandom) : firstDmg;
+    const hitDmg = hi === 0 ? firstDmg : computeDmg(hitRandom, perHitTotalMult);
     const defHpBefore = def.hp;
     def.hp = Math.max(0, def.hp - hitDmg);
     totalDmg += defHpBefore - def.hp;
     actualHits++;
     if (hitCount > 1) {
-      const hMsg = `${def.name}に ${hitDmg} ダメージ！（${actualHits}回目）`;
+      const actualDmg = defHpBefore - def.hp;
+      const hMsg = `${def.name}に ${actualDmg} ダメージ！（${actualHits}回目）`;
       g.log.push(hMsg);
-      addEffect({ kind: 'hit', side: defSide, targetIndex, hpBefore: defHpBefore, hpAfter: def.hp, message: hMsg, labels: [] });
+      const perHitLabels = [{ text: effText(eff), tone: eff >= 2 ? 'super' : (eff < 1 ? 'resist' : ''), damage: actualDmg }];
+      addEffect({ kind: 'hit', side: defSide, targetIndex, hpBefore: defHpBefore, hpAfter: def.hp, message: hMsg, labels: perHitLabels });
     }
   }
 
@@ -482,6 +520,15 @@ function doStatusMove(s, moveName, isLastMove) {
         return;
       }
     }
+  }
+
+  // みがわりによる変化技ブロック
+  if (def && def.substitute > 0 && SUB_BLOCKED_STATUS_MOVES.has(moveName) && atk.ability !== 'すりぬけ') {
+    const blockMsg = `${def.name}のみがわりが${moveName}をブロックした！`;
+    g.log.push(blockMsg);
+    addEffect({ kind: 'message', side: defSide, message: blockMsg });
+    atk.lastMoveUsed = moveName;
+    return;
   }
 
   applyMoveAdditionalEffect(moveName, s, atk, def, 0, ctx);
@@ -595,12 +642,12 @@ function resolveTurn() {
         poke.protectCounter++;
         const msg = `${poke.name}は身を守った！`;
         g.log.push(msg);
-        addEffect({ kind: 'message', side: a.side, message: msg });
+        addEffect({ kind: 'ability', side: a.side, ability: 'まもる', labels: [{ text: '守った！', tone: 'ability-blue' }], message: msg });
       } else {
         poke.protectCounter = 0;
         const msg = `${poke.name}のまもるは失敗した！`;
         g.log.push(msg);
-        addEffect({ kind: 'message', side: a.side, message: msg });
+        addEffect({ kind: 'miss', side: a.side, text: '失敗！', message: msg });
       }
       poke.lastMoveUsed = mn;
       continue;
@@ -655,19 +702,19 @@ function resolveTurn() {
       if (canMoveResult.reason === 'par') {
         const msg = `${poke.name}はまひで動けない！`;
         g.log.push(msg);
-        addEffect({ kind: 'message', side: a.side, message: msg });
+        addEffect({ kind: 'ability', side: a.side, labels: [{ text: 'まひ！', tone: 'status-par' }], message: msg });
       } else if (canMoveResult.reason === 'slp') {
         const msg = `${poke.name}はぐーぐー眠っている...`;
         g.log.push(msg);
-        addEffect({ kind: 'message', side: a.side, message: msg });
+        addEffect({ kind: 'ability', side: a.side, labels: [{ text: 'ねむり', tone: 'status-slp' }], message: msg });
       } else if (canMoveResult.reason === 'frz') {
         const msg = `${poke.name}はこおって動けない！`;
         g.log.push(msg);
-        addEffect({ kind: 'message', side: a.side, message: msg });
+        addEffect({ kind: 'ability', side: a.side, labels: [{ text: 'こおり', tone: 'status-frz' }], message: msg });
       } else if (canMoveResult.reason === 'confused') {
         const confMsg = `${poke.name}は混乱している！`;
         g.log.push(confMsg);
-        addEffect({ kind: 'message', side: a.side, message: confMsg });
+        addEffect({ kind: 'ability', side: a.side, labels: [{ text: 'こんらん！', tone: 'ability-red' }], message: confMsg });
         if (canMoveResult.selfHurt) doConfusionSelfHurt(a.side);
       }
       poke.lastMoveUsed = mn;
@@ -678,9 +725,27 @@ function resolveTurn() {
     if (poke.flinched) {
       const msg = `${poke.name}はひるんで動けない！`;
       g.log.push(msg);
-      addEffect({ kind: 'message', side: a.side, message: msg });
+      addEffect({ kind: 'ability', side: a.side, labels: [{ text: 'ひるみ！', tone: 'ability-red' }], message: msg });
       poke.lastMoveUsed = mn;
       continue;
+    }
+
+    // ソーラービーム：溜め/発射
+    if (mn === 'ソーラービーム') {
+      const weather = g.weather?.type;
+      if (poke.chargingMove === 'ソーラービーム') {
+        // 発射ターン：フラグをクリアして通常攻撃へ進む
+        poke.chargingMove = null;
+      } else if (weather !== 'sun') {
+        // 溜めターン
+        poke.chargingMove = 'ソーラービーム';
+        const msg = `${poke.name}は光を吸収した！`;
+        g.log.push(msg);
+        addEffect({ kind: 'ability', side: a.side, ability: 'ソーラービーム', labels: [{ text: '光を吸収！', tone: 'ability-green' }], message: msg });
+        poke.lastMoveUsed = mn;
+        continue;
+      }
+      // 晴れの場合はそのままdoAttackへ
     }
 
     // 技実行
@@ -705,7 +770,26 @@ function resolveTurn() {
         const team = g.teams[pivotSide];
         const activeIdx = g.active[pivotSide];
         const hasAlt = team.some((p, j) => !p.fainted && j !== activeIdx);
-        if (hasAlt) g._pendingVoltSwitch = pivotSide;
+        if (hasAlt) {
+          // 残りのmoveActionsをチェック（先制ピボット対応）
+          const remainingMoves = moveActions.slice(i + 1).filter(a => {
+            const p = active(a.side);
+            return p && !p.fainted && !g.winner;
+          });
+          if (remainingMoves.length > 0) {
+            // ピボット先制：残り行動を保存して先に強制交代
+            g._resumeActions = remainingMoves.map(a => ({ side: a.side, moveName: a.cmd?.moveName || a.moveName }));
+            g._resumeProtectSides = [...protectUsedSides];
+            g.forceSwitch = pivotSide;
+            g.commands = { A: null, B: null };
+            g.message = `プレイヤー${pivotSide}は次に出すポケモンを選んでください（ピボット技）。`;
+            g.log.push(g.message);
+            finishEffects();
+            return;
+          } else {
+            g._pendingVoltSwitch = pivotSide;
+          }
+        }
       }
     }
   }
@@ -722,119 +806,145 @@ function resolveTurn() {
     return;
   }
 
-  // ターン終了処理
-  if (!g.winner) {
-    // 1. 状態異常ダメージ（A→B）
-    ['A', 'B'].forEach(side => {
-      if (g.winner) return;
-      const p = active(side);
-      if (p && !p.fainted) {
-        applyStatusEndOfTurn(p, side, ctx);
-        if (p.fainted) checkWinner(enemy(side));
-      }
-    });
-
-    // 2. 天候ダメージ・カウントダウン
-    if (!g.winner) {
-      applyWeatherEndOfTurn(ctx);
-      ['A', 'B'].forEach(side => {
-        if (active(side)?.fainted && !g.winner) checkWinner(enemy(side));
-      });
-    }
-
-    // 3. 持ち物・特性エンドターン
-    if (!g.winner) {
-      ['A', 'B'].forEach(side => {
-        if (g.winner) return;
-        triggerItemOnEndTurn(side, ctx);
-        triggerOnEndTurn(side, ctx);
-        if (active(side)?.fainted) checkWinner(enemy(side));
-      });
-    }
-
-    // 4. ほろびのうたカウントダウン
-    if (!g.winner) {
-      ['A', 'B'].forEach(side => {
-        if (g.winner) return;
-        const p = active(side);
-        if (p && !p.fainted && p.perishSongCounter > 0) {
-          p.perishSongCounter--;
-          const msg = `${p.name}のほろびのカウント：${p.perishSongCounter}`;
-          g.log.push(msg);
-          addEffect({ kind: 'message', side, message: msg });
-          if (p.perishSongCounter === 0) {
-            p.hp = 0;
-            p.fainted = true;
-            const fm = `${p.name}はほろびのうたで気絶した！`;
-            g.log.push(fm);
-            addEffect({ kind: 'faint', side, targetIndex: g.active[side], hpAfter: 0, message: fm });
-            checkWinner(enemy(side));
-          }
-        }
-      });
-    }
-
-    // 5. トリックルームカウントダウン
-    if (g.trickRoom > 0) {
-      g.trickRoom--;
-      if (g.trickRoom === 0) {
-        const msg = 'トリックルームが終わった！';
-        g.log.push(msg);
-        addEffect({ kind: 'message', side: 'A', message: msg });
-      }
-    }
-
-    // 6. 揮発性フラグのクリーンアップ
-    ['A', 'B'].forEach(side => {
-      const p = active(side);
-      if (!p) return;
-      p.flinched = false;
-      p.protected = false;
-      // まもるを使わなかったポケモンはカウンターをリセット
-      if (!protectUsedSides.has(side)) p.protectCounter = 0;
-      p.firstTurnOut = false;
-      // lastMoveDamageは次のターン用にリセット
-      p.lastMoveDamage = { physical: 0, special: 0 };
-      // ちょうはつカウントダウン
-      if (p.taunt > 0) {
-        p.taunt--;
-        if (p.taunt === 0) {
-          const tMsg = `${p.name}はちょうはつが解けた！`;
-          g.log.push(tMsg);
-          addEffect({ kind: 'message', side, message: tMsg });
-        }
-      }
-      // アンコールカウントダウン
-      if (p.encoreTurns > 0) {
-        p.encoreTurns--;
-        if (p.encoreTurns <= 0) {
-          p.encored = null;
-          p.encoreTurns = 0;
-          const eMsg = `${p.name}のアンコールが終わった！`;
-          g.log.push(eMsg);
-          addEffect({ kind: 'message', side, message: eMsg });
-        }
-      }
-    });
-
-    // 次のターンへ or 強制交代
-    if (!g.winner) {
-      const need = ['A', 'B'].find(s => {
-        const p = active(s);
-        return p && p.fainted;
-      });
-      if (need) {
-        g.forceSwitch = need;
-        g.commands = { A: null, B: null };
-        g.message = `プレイヤー${need}は次に出すポケモンを選んでください。`;
-        g.log.push(g.message);
-      } else {
-        nextTurn();
-      }
-    }
-  }
-
+  doEndOfTurn(protectUsedSides);
   finishEffects();
 }
 
-module.exports = { checkWinner, doSurrender, nextTurn, doSwitch, doAttack, resolveTurn };
+// ターン終了処理（resolveTurn・resumeAfterPivot 共用）
+function doEndOfTurn(protectUsedSides) {
+  const g = state.game;
+
+  if (g.winner) return;
+
+  // 1. 状態異常ダメージ（A→B）
+  ['A', 'B'].forEach(side => {
+    if (g.winner) return;
+    const p = active(side);
+    if (p && !p.fainted) {
+      applyStatusEndOfTurn(p, side, ctx);
+      if (p.fainted) checkWinner(enemy(side));
+    }
+  });
+
+  // 2. 天候ダメージ・カウントダウン
+  if (!g.winner) {
+    applyWeatherEndOfTurn(ctx);
+    ['A', 'B'].forEach(side => {
+      if (active(side)?.fainted && !g.winner) checkWinner(enemy(side));
+    });
+  }
+
+  // 3. 持ち物・特性エンドターン
+  if (!g.winner) {
+    ['A', 'B'].forEach(side => {
+      if (g.winner) return;
+      triggerItemOnEndTurn(side, ctx);
+      triggerOnEndTurn(side, ctx);
+      if (active(side)?.fainted) checkWinner(enemy(side));
+    });
+  }
+
+  // 4. ほろびのうたカウントダウン
+  if (!g.winner) {
+    ['A', 'B'].forEach(side => {
+      if (g.winner) return;
+      const p = active(side);
+      if (p && !p.fainted && p.perishSongCounter > 0) {
+        p.perishSongCounter--;
+        const msg = `${p.name}のほろびのカウント：${p.perishSongCounter}`;
+        g.log.push(msg);
+        addEffect({ kind: 'message', side, message: msg });
+        if (p.perishSongCounter === 0) {
+          p.hp = 0;
+          p.fainted = true;
+          const fm = `${p.name}はほろびのうたで気絶した！`;
+          g.log.push(fm);
+          addEffect({ kind: 'faint', side, targetIndex: g.active[side], hpAfter: 0, message: fm });
+          checkWinner(enemy(side));
+        }
+      }
+    });
+  }
+
+  // 5. トリックルームカウントダウン
+  if (g.trickRoom > 0) {
+    g.trickRoom--;
+    if (g.trickRoom === 0) {
+      const msg = 'トリックルームが終わった！';
+      g.log.push(msg);
+      addEffect({ kind: 'message', side: 'A', message: msg });
+    }
+  }
+
+  // 6. 揮発性フラグのクリーンアップ
+  ['A', 'B'].forEach(side => {
+    const p = active(side);
+    if (!p) return;
+    p.flinched = false;
+    p.protected = false;
+    if (!protectUsedSides || !protectUsedSides.has(side)) p.protectCounter = 0;
+    p.firstTurnOut = false;
+    p.lastMoveDamage = { physical: 0, special: 0 };
+    if (p.taunt > 0) {
+      p.taunt--;
+      if (p.taunt === 0) {
+        const tMsg = `${p.name}はちょうはつが解けた！`;
+        g.log.push(tMsg);
+        addEffect({ kind: 'message', side, message: tMsg });
+      }
+    }
+    if (p.encoreTurns > 0) {
+      p.encoreTurns--;
+      if (p.encoreTurns <= 0) {
+        p.encored = null;
+        p.encoreTurns = 0;
+        const eMsg = `${p.name}のアンコールが終わった！`;
+        g.log.push(eMsg);
+        addEffect({ kind: 'message', side, message: eMsg });
+      }
+    }
+  });
+
+  // 次のターンへ or 強制交代（気絶）
+  if (!g.winner) {
+    const need = ['A', 'B'].find(s => {
+      const p = active(s);
+      return p && p.fainted;
+    });
+    if (need) {
+      g.forceSwitch = need;
+      g.commands = { A: null, B: null };
+      g.message = `プレイヤー${need}は次に出すポケモンを選んでください。`;
+      g.log.push(g.message);
+    } else {
+      nextTurn();
+    }
+  }
+}
+
+// ピボット後に残りの技を実行してターン終了
+function resumeAfterPivot() {
+  const g = state.game;
+  const resumeActions = g._resumeActions || [];
+  delete g._resumeActions;
+  const protectUsedSides = new Set(g._resumeProtectSides || []);
+  delete g._resumeProtectSides;
+
+  for (const a of resumeActions) {
+    const poke = active(a.side);
+    if (!poke || poke.fainted || g.winner) continue;
+    const mn = a.moveName;
+    const m = MOVES[mn];
+    if (!m) continue;
+    const isLastAction = true;
+    if (m.category === '変化') doStatusMove(a.side, mn, isLastAction);
+    else doAttack(a.side, mn, isLastAction);
+    // ピボットのネストは防ぐ
+    if (g._voltSwitch) delete g._voltSwitch;
+    if (g._pendingVoltSwitch) delete g._pendingVoltSwitch;
+  }
+
+  doEndOfTurn(protectUsedSides);
+}
+
+module.exports = { checkWinner, doSurrender, nextTurn, doSwitch, doAttack, resolveTurn, doEndOfTurn, resumeAfterPivot };

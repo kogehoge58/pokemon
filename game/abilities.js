@@ -3,6 +3,7 @@
 const { applyStatStage, stageMultiplier } = require('./pokemon.js');
 const { applyStatus } = require('./status.js');
 const { setWeather } = require('./weather.js');
+const { MOVES } = require('../data.js');
 
 // --- エントリー特性レジストリ ---
 const ENTRY_HOOKS = {
@@ -12,18 +13,22 @@ const ENTRY_HOOKS = {
     const targetSide = ctx.enemy(side);
     const target = ctx.active(targetSide);
     if (!target || target.fainted) return;
+    // まずいかく発動エフェクトを表示
+    const atkMsg = `${p.name}のいかく！`;
+    ctx.state.game.log.push(atkMsg);
+    ctx.addEffect({ kind: 'ability', side, ability: 'いかく', labels: [{ text: 'いかく', tone: 'ability-red' }], message: atkMsg });
     // クリアボディ/しろいけむり：いかくを無効化
     if (target.ability === 'クリアボディ' || target.ability === 'しろいけむり') {
       const blockMsg = `${target.name}の${target.ability}！ いかくを防いだ！`;
       ctx.state.game.log.push(blockMsg);
-      ctx.addEffect({ kind: 'ability', side: targetSide, ability: target.ability, message: blockMsg });
+      ctx.addEffect({ kind: 'ability', side: targetSide, ability: target.ability, labels: [{ text: target.ability, tone: 'ability-blue' }], message: blockMsg });
       return;
     }
     const applied = applyStatStage(target, 'atk', -1);
     if (!applied) return;
-    const msg = `${p.name}のいかく！ ${target.name}の攻撃が下がった！`;
+    const msg = `${target.name}の攻撃が下がった！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'ability', side, ability: 'いかく', labels: [{ text: 'いかく', tone: 'ability-blue' }], message: msg });
+    ctx.addEffect({ kind: 'stat', side: targetSide, labels: [{ text: '攻撃↓', tone: 'ability-blue' }], message: msg });
   },
   'トレース': (side, ctx) => {
     const p = ctx.active(side);
@@ -66,6 +71,68 @@ const ENTRY_HOOKS = {
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'すなおこし', labels: [{ text: 'すなおこし', tone: 'ability-red' }], message: msg });
   },
+  'かわりもの': (side, ctx) => {
+    const p = ctx.active(side);
+    if (!p || p.fainted) return;
+    const oppSide = ctx.enemy(side);
+    const opp = ctx.active(oppSide);
+    if (!opp || opp.fainted) return;
+
+    // ── 変身前のオリジナルデータを保存（引いて再出場した時に復元するため）──
+    if (!p._originalData) {
+      p._originalData = {
+        sprite: p.sprite, spriteUrl: p.spriteUrl,
+        staticSpriteUrl: p.staticSpriteUrl, spriteEmoji: p.spriteEmoji,
+        types: [...p.types],
+        ability: p.ability,
+        moves: [...p.moves], movePP: { ...p.movePP },
+        rawStats: { ...p.rawStats }, baseStats: { ...p.baseStats },
+        displayStats: { ...p.displayStats },
+      };
+    }
+
+    // ── 見た目コピー ──
+    p.sprite      = opp.sprite;
+    p.spriteUrl   = opp.spriteUrl;
+    p.staticSpriteUrl = opp.staticSpriteUrl;
+    p.spriteEmoji = opp.spriteEmoji;
+
+    // ── タイプコピー ──
+    p.types = [...opp.types];
+
+    // ── 特性コピー（相手もかわりものなら据え置き）──
+    p.ability = opp.ability === 'かわりもの' ? 'かわりもの' : opp.ability;
+
+    // ── 技コピー＋PP設定（最大PP=1→1/1、それ以外→5/5）──
+    p.moves = [...opp.moves];
+    p.movePP = {};
+    for (const mn of opp.moves) {
+      const maxPP = MOVES[mn]?.pp ?? 5;
+      p.movePP[mn] = maxPP === 1 ? 1 : 5;
+    }
+
+    // ── HP以外のステータス実数値コピー（HPは自分のまま）──
+    p.rawStats    = { ...opp.rawStats,    hp: p.rawStats.hp };
+    p.baseStats   = { ...opp.baseStats,   hp: p.baseStats.hp };
+    p.displayStats= { ...opp.displayStats,hp: p.displayStats.hp };
+
+    // ── ランク補正コピー＋stats再計算 ──
+    p.statStages = { ...opp.statStages };
+    p.statColors = { ...opp.statColors };
+    for (const stat of ['atk', 'def', 'spa', 'spd', 'spe']) {
+      const mult = stageMultiplier(p.statStages[stat] || 0);
+      p.stats[stat] = Math.max(1, Math.floor(p.rawStats[stat] * mult));
+    }
+
+    // こだわりロックリセット（変身後は新しい技で再ロック）
+    p.choiceMove = null;
+    p.transformed = true;
+
+    const msg = `${p.name}はかわりもの！ ${opp.name}に変身した！`;
+    ctx.state.game.log.push(msg);
+    ctx.addEffect({ kind: 'ability', side, ability: 'かわりもの', labels: [{ text: 'かわりもの', tone: 'ability-red' }], message: msg });
+  },
+
   'もらいび': (side, ctx) => {
     // もらいびは炎技を受けた時に発動（engine.js の免疫チェックで処理）
   },

@@ -63,7 +63,7 @@ export default defineComponent({
                 </span>
               </div>
               <div class="dex-actions">
-                <button class="mini-btn" @click="openModal('details', { name })">詳細</button>
+                <button class="mini-btn" @click="openModal('details', { name, item: data.ITEM_BY_POKEMON?.[name] })">詳細</button>
                 <button
                   class="primary mini-btn"
                   :disabled="confirmed || chosen.includes(name) || chosen.length >= 3"
@@ -90,7 +90,7 @@ export default defineComponent({
                 <div class="selected-actions" style="margin-top:8px">
                   <button class="mini-btn" :disabled="confirmed || i === 0" @click="finalReorder(i, i - 1)">↑</button>
                   <button class="mini-btn" :disabled="confirmed || i === chosen.length - 1" @click="finalReorder(i, i + 1)">↓</button>
-                  <button class="mini-btn" @click="openModal('details', { name })">詳細</button>
+                  <button class="mini-btn" @click="openModal('details', { name, item: data.ITEM_BY_POKEMON?.[name] })">詳細</button>
                   <button class="mini-btn danger" :disabled="confirmed" @click="finalRemove(i)">外す</button>
                 </div>
               </div>
@@ -129,7 +129,7 @@ export default defineComponent({
                 </div>
               </div>
               <div class="dex-actions">
-                <button class="mini-btn" @click="openModal('details', { name })">詳細</button>
+                <button class="mini-btn" @click="openModal('details', { name, item: data.ITEM_BY_POKEMON?.[name] })">詳細</button>
               </div>
             </div>
           </div>
