@@ -52,13 +52,20 @@ function applyWeatherEndOfTurn(ctx) {
     });
   }
 
+  const beforeType  = g.weather.type;
+  const beforeTurns = g.weather.turns;
   g.weather.turns--;
+
   if (g.weather.turns <= 0) {
-    const name = WEATHER_NAMES[g.weather.type] || '';
+    const name = WEATHER_NAMES[beforeType] || '';
     const msg = `${name}がやんだ！`;
     g.log.push(msg);
-    ctx.addEffect({ kind: 'message', side: 'A', message: msg });
     g.weather.type = null;
+    // weather-tick(ended) でバッジ/オーバーレイ消去タイミングを制御
+    ctx.addEffect({ kind: 'weather-tick', before: { type: beforeType, turns: beforeTurns }, ended: true, message: msg });
+  } else {
+    // weather-tick でカウント更新タイミングを制御（表示はターン終了後に更新）
+    ctx.addEffect({ kind: 'weather-tick', before: { type: beforeType, turns: beforeTurns }, after: { type: beforeType, turns: g.weather.turns } });
   }
 }
 

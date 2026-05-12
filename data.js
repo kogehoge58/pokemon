@@ -110,7 +110,7 @@ const MOVES = {
   "ドレインパンチ":   { type:"かくとう", power:75,  category:"物理", accuracy:100, pp:10, effect:"与ダメージの半分回復" },
   "マッハパンチ":     { type:"かくとう", power:40,  category:"物理", accuracy:100, pp:30, effect:"先制技" },
   "バレットパンチ":   { type:"はがね",   power:40,  category:"物理", accuracy:100, pp:30, effect:"先制技" },
-  "ちきゅうなげ":     { type:"かくとう", power:0,   category:"物理", accuracy:100, pp:20, effect:"自分のレベル分固定ダメージ" },
+  "ちきゅうなげ":     { type:"かくとう", power:0,   category:"物理", accuracy:100, pp:20, effect:"定数ダメージ50" },
   "カウンター":       { type:"かくとう", power:1,   category:"物理", accuracy:100, pp:20, effect:"受けた物理ダメージを2倍返し" },
   "ボディプレス":     { type:"かくとう", power:80,  category:"物理", accuracy:100, pp:10, effect:"自分の防御でダメージ計算" },
   // かくとう特殊
@@ -152,7 +152,7 @@ const MOVES = {
   "サイコキネシス":   { type:"エスパー", power:90,  category:"特殊", accuracy:100, pp:10, effect:"10%で特防↓" },
   "サイコショック":   { type:"エスパー", power:80,  category:"特殊", accuracy:100, pp:10, effect:"相手の防御で計算" },
   "じんつうりき":     { type:"エスパー", power:80,  category:"特殊", accuracy:100, pp:15, effect:"通常攻撃" },
-  "ナイトヘッド":     { type:"ゴースト", power:0,   category:"特殊", accuracy:100, pp:15, effect:"自分のレベル分固定ダメージ" },
+  "ナイトヘッド":     { type:"ゴースト", power:0,   category:"特殊", accuracy:100, pp:15, effect:"定数ダメージ50" },
   "ミラーコート":     { type:"エスパー", power:1,   category:"特殊", accuracy:100, pp:20, effect:"受けた特殊ダメージを2倍返し" },
   // エスパー変化
   "めいそう":         { type:"エスパー", power:0,   category:"変化", accuracy:101, pp:20, effect:"特攻・特防↑" },

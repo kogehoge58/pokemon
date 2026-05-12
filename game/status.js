@@ -74,6 +74,7 @@ function checkCanMove(pokemon) {
     pokemon.confusionTurns--;
     if (pokemon.confusionTurns <= 0) {
       clearConfusion(pokemon);
+      return { canMove: true, confusionCleared: true };
     } else if (Math.random() < 0.5) {
       return { canMove: false, reason: 'confused', selfHurt: true };
     }
@@ -84,7 +85,7 @@ function checkCanMove(pokemon) {
 
 function applyStatusEndOfTurn(pokemon, side, ctx) {
   const msgs = [];
-  if (pokemon.fainted) return msgs;
+  if (pokemon.fainted || pokemon.hp <= 0) return msgs;
 
   const push = (msg) => { msgs.push(msg); ctx.state.game.log.push(msg); };
   const ti = ctx.state.game.active[side];
@@ -144,7 +145,7 @@ function applyStatusEndOfTurn(pokemon, side, ctx) {
       if (applyStatus(pokemon, 'slp')) {
         const msg = `${pokemon.name}は眠ってしまった！`;
         push(msg);
-        ctx.addEffect({ kind: 'status', side, status: 'slp', message: msg });
+        ctx.addEffect({ kind: 'status', side, status: 'slp', message: msg, targetIndex: ctx.state.game.active[side] });
       }
     }
   }

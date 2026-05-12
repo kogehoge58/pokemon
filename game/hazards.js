@@ -86,7 +86,14 @@ function applyHazardsOnEntry(side, pokemon, ctx) {
       if (applied) {
         const msg = `ねばねばネットで ${pokemon.name} の素早さが下がった！`;
         push(msg);
-        ctx.addEffect({ kind: 'message', side, message: msg });
+        ctx.addEffect({
+          kind: 'stat',
+          side,
+          targetIndex: g.active[side],
+          labels: [{ text: '素早さ↓', tone: 'ability-red' }],
+          statStages: { ...pokemon.statStages },
+          message: msg,
+        });
       }
     }
   }

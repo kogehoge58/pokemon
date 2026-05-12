@@ -1,5 +1,18 @@
 import { defineComponent, computed, ref, watch, onUnmounted } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, saveParty, saveBgm, fetchParties, pauseBgm, resumeBgm, attachCompressor, effectiveness, openModal } from '../store.js';
+import { store, saveParty, saveBgm, saveUserSetting, applyUserSettings, fetchParties, pauseBgm, resumeBgm, effectiveness, openModal } from '../store.js';
+
+const BG_THEMES = [
+  { label: 'ホワイト', value: 'linear-gradient(135deg, #eeeefc 0%, #ffffff 50%, #f4f4fc 100%)' },
+  { label: 'ブラック', value: 'linear-gradient(135deg, #a0a0b8 0%, #c8c8d8 50%, #a8a8c0 100%)' },
+  { label: 'レッド',   value: 'linear-gradient(135deg, #ff8888 0%, #ffbbbb 50%, #ff88aa 100%)' },
+  { label: 'グリーン', value: 'linear-gradient(135deg, #55cc88 0%, #99eebb 50%, #55cc77 100%)' },
+  { label: 'ブルー',   value: 'linear-gradient(135deg, #5599ff 0%, #99ccff 50%, #5588ff 100%)' },
+  { label: 'イエロー', value: 'linear-gradient(135deg, #ffee22 0%, #ffff88 50%, #ffdd00 100%)' },
+  { label: 'パープル', value: 'linear-gradient(135deg, #bb55ff 0%, #dd99ff 50%, #aa44ff 100%)' },
+  { label: 'オレンジ', value: 'linear-gradient(135deg, #ff9922 0%, #ffcc77 50%, #ff8800 100%)' },
+  { label: 'ピンク',   value: 'linear-gradient(135deg, #ff66bb 0%, #ffaadd 50%, #ff55aa 100%)' },
+  { label: 'シアン',   value: 'linear-gradient(135deg, #22ddee 0%, #77eeff 50%, #11ccee 100%)' },
+];
 
 export default defineComponent({
   name: 'PartyScreen',
@@ -131,9 +144,14 @@ export default defineComponent({
     const bgmList = ref([]);
     const playingFile = ref('');
     let _previewAudio = null;
-    let _previewNodes = null;
 
     const currentBgm = computed(() => store.parties?.[selectedUser.value]?.bgm || null);
+    const currentBgTheme = computed(() => store.parties?.[selectedUser.value]?.bgTheme || null);
+
+    async function setBgTheme(value) {
+      await saveUserSetting(selectedUser.value, 'bgTheme', value);
+      applyUserSettings(selectedUser.value);
+    }
 
     async function loadBgmList() {
       const res = await fetch('/battle-bgm-list');
@@ -142,13 +160,7 @@ export default defineComponent({
     }
 
     function stopPreviewAudio() {
-      if (_previewNodes) {
-        try { _previewNodes.src.disconnect(); } catch {}
-        try { _previewNodes.comp.disconnect(); } catch {}
-        try { _previewNodes.gain.disconnect(); } catch {}
-        _previewNodes = null;
-      }
-      if (_previewAudio) { _previewAudio.pause(); _previewAudio = null; }
+      if (_previewAudio) { _previewAudio.pause(); _previewAudio.src = ''; _previewAudio = null; }
     }
 
     function playPreview(filename) {
@@ -163,9 +175,8 @@ export default defineComponent({
       playingFile.value = filename;
       _previewAudio = new Audio('/music/battle/' + encodeURIComponent(filename));
       _previewAudio.volume = 0.55;
-      _previewNodes = attachCompressor(_previewAudio); // 音量均一化
       _previewAudio.play().catch(() => {});
-      _previewAudio.onended = () => { playingFile.value = ''; _previewAudio = null; _previewNodes = null; resumeBgm(); };
+      _previewAudio.onended = () => { playingFile.value = ''; _previewAudio = null; resumeBgm(); };
     }
 
     function pausePreview() {
@@ -183,7 +194,7 @@ export default defineComponent({
       if (!val) pausePreview(); // タブを離れたらプレビュー停止 & ポケセンBGM再開
     });
 
-    onUnmounted(() => { stopPreviewAudio(); resumeBgm(); });
+    onUnmounted(() => { pausePreview(); });
 
     return {
       store, data, parties, selectedUser, selectedSlot, typeFilter, editParty, editName, saved, isDirty,
@@ -191,14 +202,31 @@ export default defineComponent({
       allNames, filteredNames, holes, recommendedTypes,
       addPokemon, removePokemon, clearAll, moveUp, moveDown, onNameInput, handleSave,
       showBgm, bgmList, playingFile, currentBgm, playPreview, pausePreview, setBgm,
+      currentBgTheme, setBgTheme, BG_THEMES,
       openModal, effectiveness,
     };
   },
   template: `
     <div class="party-screen">
-      <div class="party-screen-header">
-        <h2>パーティ登録</h2>
-      </div>
+
+      <!-- 未保存警告フローティングバナー -->
+      <div
+        v-if="isDirty && !showBgm"
+        style="
+          position: fixed;
+          top: 0; left: 0; right: 0;
+          z-index: 9999;
+          background: #c0392b;
+          color: #fff;
+          text-align: center;
+          font-size: 14px;
+          font-weight: 700;
+          padding: 8px 16px;
+          letter-spacing: 0.04em;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+          pointer-events: none;
+        "
+      >⚠ 変更が保存されていません！</div>
 
       <!-- スロット選択 -->
       <div class="party-slot-tabs" style="display:flex;gap:6px;margin:8px 0;flex-wrap:wrap">
@@ -210,15 +238,15 @@ export default defineComponent({
         <button
           :class="['party-user-tab', showBgm && 'active']"
           @click="showBgm = true"
-        >🎵 BGM設定</button>
+        >⚙️ 個別設定</button>
       </div>
 
       <div class="party-screen-body">
-        <!-- BGM設定ビュー -->
+        <!-- 左：個別設定時はBGMパネル -->
         <div v-if="showBgm" class="panel party-edit-panel">
-          <h3 style="margin-bottom:8px">バトルBGM設定</h3>
+          <h3 style="margin-bottom:8px">🎵 バトルBGM</h3>
           <div class="small" style="margin-bottom:14px;color:#555">バトル開始時に流れるBGMを選択してください。未設定の場合はデフォルト曲が流れます。</div>
-          <div v-if="currentBgm" class="bgm-current-info">♪ 現在の設定：<b>{{ currentBgm.replace(/\.mp3$/i, '') }}</b></div>
+          <div v-if="currentBgm" class="bgm-current-info">♪ 現在：<b>{{ currentBgm.replace(/\.mp3$/i, '') }}</b></div>
           <div v-else class="bgm-current-info" style="opacity:.6">未設定（デフォルト：ブルベリーグ四天王戦）</div>
           <div v-if="!bgmList.length" class="coverage-empty" style="margin-top:12px">BGMファイルが見つかりません</div>
           <div v-else class="bgm-list">
@@ -226,10 +254,7 @@ export default defineComponent({
               v-for="f in bgmList" :key="f"
               :class="['bgm-item', currentBgm === f && 'bgm-active']"
             >
-              <div class="bgm-name">
-                {{ f.replace(/\.mp3$/i, '') }}
-                <span v-if="currentBgm === f" class="bgm-current-badge">♪ 設定中</span>
-              </div>
+              <div class="bgm-name">{{ f.replace(/\.mp3$/i, '') }}</div>
               <div class="bgm-actions">
                 <button class="mini-btn" :disabled="playingFile === f" @click="playPreview(f)">▶ 再生</button>
                 <button class="mini-btn" :disabled="playingFile !== f" @click="pausePreview()">⏸ 停止</button>
@@ -321,8 +346,27 @@ export default defineComponent({
           </div>
         </div>
 
-        <!-- 右：図鑑（BGM設定時は非表示）-->
-        <div v-if="!showBgm" class="panel party-dex-panel">
+        <!-- 右：個別設定時はカラー/テーマ、それ以外は図鑑 -->
+        <div v-if="showBgm" class="panel party-dex-panel">
+
+          <!-- ===== 背景テーマ設定 ===== -->
+          <h3 style="margin-bottom:8px">🌅 背景テーマ</h3>
+          <div class="small" style="margin-bottom:12px;color:#555">画面全体の背景テーマを選べます。</div>
+          <div v-if="currentBgTheme" class="bgm-current-info">
+            現在：<b>{{ BG_THEMES.find(t => t.value === currentBgTheme)?.label || '—' }}</b>
+          </div>
+          <div class="settings-theme-grid">
+            <button
+              v-for="t in BG_THEMES" :key="t.value"
+              class="theme-swatch-btn"
+              :class="{ 'theme-swatch-active': currentBgTheme === t.value }"
+              :style="{ background: t.value }"
+              @click="setBgTheme(t.value)"
+            >{{ t.label }}</button>
+          </div>
+
+        </div>
+        <div v-else class="panel party-dex-panel">
           <h3>ポケモン図鑑から追加</h3>
 
           <!-- タイプフィルター -->

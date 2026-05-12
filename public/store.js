@@ -13,6 +13,7 @@ export const store = reactive({
   showPartyScreen: false,
   requestBusy: false,
   selectedTypeFilter: '',
+  bgmUserPaused: false,  // ユーザーが手動で一時停止中
 
   // エフェクト再生用ローカル状態
   localAnim: null,                        // { side, type: 'attack'|'hit'|'faint' }
@@ -23,6 +24,18 @@ export const store = reactive({
   localHpOverrides: {},                   // { 'A:0': hp, ... }
   localSubstituteOverrides: {},           // { 'A:0': subHp, ... }
   localActiveOverrides: {},               // { A: index, ... }
+  localStatusOverrides: {},               // { 'A:0': status|null } エフェクト完了まで旧ステータスを保持
+  localStatStageOverrides: {},            // { 'A:0': {atk:0,...} } 能力変化矢印の表示タイミング制御
+  localYawnOverrides: {},                 // { 'A:0': 0|1 } ねむけバッジの表示タイミング制御
+  localTauntOverrides: {},                // { 'A:0': 0|N } ちょうはつバッジの表示タイミング制御
+  localEncoreOverrides: {},               // { 'A:0': 0|N } アンコールバッジの表示タイミング制御
+  localConfusionOverrides: {},            // { 'A:0': bool } こんらんバッジの表示タイミング制御
+  localHazardOverrides: null,             // { A:{...}, B:{...} } 設置技バッジの表示タイミング制御
+  localTrickRoomOverride: null,           // null=サーバー値使用, number=表示タイミング制御
+  localWeatherOverride: null,             // null=サーバー値使用, {type,turns}=表示タイミング制御
+  localPerishSongOverrides: {},           // { 'A:0': count } ほろびバッジの表示タイミング制御
+  localItemUsedOverrides: {},             // { 'A:0': bool } itemUsedの表示タイミング制御（エフェクト完了まで旧状態保持）
+  localItemOverrides: {},                 // { 'A:0': string|null } はたきおとす後の持ち物バッジ表示タイミング制御
   faintVisualReady: {},                   // { 'A:0': bool }
   seenEffectId: 0,
   seenPopupCloseId: 0,
@@ -150,6 +163,7 @@ export async function loadState() {
 export async function fetchParties() {
   const res = await fetch('/parties');
   store.parties = await res.json();
+  if (store.userName) applyUserSettings(store.userName);
 }
 
 export async function saveParty(user, slotIndex, name, pokemon) {
@@ -234,6 +248,14 @@ function updateState(newGame, newVersion, shouldPlay = true) {
     store.localEffectTags = { A: [], B: [] };
     store.localHpOverrides = {};
     store.localSubstituteOverrides = {};
+    store.localStatStageOverrides = {};
+    store.localYawnOverrides = {};
+    store.localTauntOverrides = {};
+    store.localHazardOverrides = null;
+    store.localItemUsedOverrides = {};
+    store.localItemOverrides = {};
+    store.localEncoreOverrides = {};
+    store.localConfusionOverrides = {};
     store.faintVisualReady = {};
     store.resultStampVisible = false;
   }
@@ -244,9 +266,17 @@ function updateState(newGame, newVersion, shouldPlay = true) {
   const hasNewEffects = shouldPlay && incomingEffectId > store.seenEffectId && newGame?.effects?.length;
 
   if (hasNewEffects) {
-    // エフェクト再生前にHP・みがわりをスナップショット
+    // エフェクト再生前にHP・みがわり・ステータス・能力変化・あくび・ちょうはつ・消耗品をスナップショット
     store.localHpOverrides = snapshotHp(store.game || newGame);
     store.localSubstituteOverrides = snapshotSubstitutes(store.game || newGame);
+    store.localStatusOverrides = snapshotStatus(store.game || newGame);
+    store.localStatStageOverrides = snapshotStatStages(store.game || newGame);
+    store.localYawnOverrides = snapshotYawn(store.game || newGame);
+    store.localTauntOverrides = snapshotTaunt(store.game || newGame);
+    store.localEncoreOverrides = snapshotEncore(store.game || newGame);
+    store.localConfusionOverrides = snapshotConfusion(store.game || newGame);
+    store.localHazardOverrides = snapshotHazards(store.game || newGame);
+    store.localItemUsedOverrides = snapshotItemUsed(store.game || newGame);
     // 気絶エフェクトがあるポケモンは、アニメーション完了まで通常表示
     for (const e of newGame.effects) {
       if (e.kind === 'faint' && e.side && e.targetIndex !== undefined) {
@@ -295,6 +325,9 @@ function updateState(newGame, newVersion, shouldPlay = true) {
 
   if (hasNewEffects && newGame?.mode === 'battle') {
     store.seenEffectId = incomingEffectId;
+    // pre-scan は即座に実行してバッジ/オーバーレイの初期値を確定させる
+    // （バトル開始遅延中でも天候オーバーレイが一瞬見えるのを防ぐ）
+    preScanEffects(newGame.effects);
     if (isBattleStart) {
       // 演出が完全に終わってからエフェクト再生
       setTimeout(() => playEffects(newGame.effects), 2700);
@@ -308,58 +341,56 @@ function updateState(newGame, newVersion, shouldPlay = true) {
 
 // --- BGM管理 ---
 let _bgm = null;
-let _bgmFile = null;
-let _bgmNodes = null; // { src, comp, gain }
-let _audioCtx = null;
-
-function getAudioCtx() {
-  if (!_audioCtx) {
-    try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
-  }
-  if (_audioCtx?.state === 'suspended') _audioCtx.resume().catch(() => {});
-  return _audioCtx;
-}
-
-// Web Audio API の DynamicsCompressor で音量を均一化（だいたい）
-export function attachCompressor(audio) {
-  const ctx = getAudioCtx();
-  if (!ctx) return null;
-  try {
-    const src = ctx.createMediaElementSource(audio);
-    const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -20;
-    comp.knee.value = 10;
-    comp.ratio.value = 8;
-    comp.attack.value = 0.003;
-    comp.release.value = 0.20;
-    const gain = ctx.createGain();
-    gain.gain.value = 1.15; // makeup gain
-    src.connect(comp);
-    comp.connect(gain);
-    gain.connect(ctx.destination);
-    return { src, comp, gain };
-  } catch { return null; }
-}
-
-function disconnectNodes(nodes) {
-  if (!nodes) return;
-  try { nodes.src.disconnect(); } catch {}
-  try { nodes.comp.disconnect(); } catch {}
-  try { nodes.gain.disconnect(); } catch {}
-}
+let _bgmFile = null; // 現在再生中 or 一時停止中のファイル
+let _bgmLoop = true;
 
 export function playBgm(relPath, loop = true) {
-  if (_bgmFile === relPath && _bgm && !_bgm.paused) return; // 既に再生中
-  disconnectNodes(_bgmNodes); _bgmNodes = null;
+  _bgmLoop = loop;
+
+  if (store.bgmUserPaused) {
+    // ユーザーが手動ポーズ中：曲が変わったら古いaudioを破棄して準備だけする
+    if (_bgmFile !== relPath) {
+      if (_bgm) { _bgm.pause(); _bgm.currentTime = 0; _bgm = null; }
+      _bgmFile = relPath;
+    }
+    // 再生はしない（ユーザーが▶を押すまで待つ）
+    return;
+  }
+
+  // 同じ曲が既に再生中なら何もしない
+  if (_bgmFile === relPath && _bgm && !_bgm.paused) return;
+
   if (_bgm) { _bgm.pause(); _bgm.currentTime = 0; _bgm = null; }
   _bgmFile = relPath;
-  // サブディレクトリを含むパスを正しくエンコード（例: battle/曲名.mp3）
   const encodedPath = relPath.split('/').map(encodeURIComponent).join('/');
   _bgm = new Audio('/music/' + encodedPath);
   _bgm.loop = loop;
   _bgm.volume = 0.55;
-  _bgmNodes = attachCompressor(_bgm);
   _bgm.play().catch(() => {});
+}
+
+// ヘッダーの再生/一時停止ボタン用トグル
+export function toggleUserBgm() {
+  if (store.bgmUserPaused) {
+    // 再生再開
+    store.bgmUserPaused = false;
+    if (!_bgmFile) return;
+    if (_bgm) {
+      // 同じ曲が残っていれば止めた位置から再開
+      _bgm.play().catch(() => {});
+    } else {
+      // 画面遷移で曲が変わっていた → 先頭から再生
+      const encodedPath = _bgmFile.split('/').map(encodeURIComponent).join('/');
+      _bgm = new Audio('/music/' + encodedPath);
+      _bgm.loop = _bgmLoop;
+      _bgm.volume = 0.55;
+      _bgm.play().catch(() => {});
+    }
+  } else {
+    // 一時停止（audioは破棄せず currentTime を保持）
+    store.bgmUserPaused = true;
+    if (_bgm && !_bgm.paused) _bgm.pause();
+  }
 }
 
 export async function saveBgm(user, filename) {
@@ -375,6 +406,30 @@ export async function saveBgm(user, filename) {
   } catch { return false; }
 }
 
+export async function saveUserSetting(user, key, value) {
+  try {
+    const res = await fetch('/save-user-setting', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, key, value }),
+    });
+    if (!res.ok) return false;
+    if (store.parties?.[user]) store.parties[user][key] = value || null;
+    return true;
+  } catch { return false; }
+}
+
+// ログインユーザーの背景テーマをCSSに即時反映
+export function applyUserSettings(user) {
+  const u = store.parties?.[user];
+  const root = document.documentElement;
+  if (u?.bgTheme) {
+    root.style.setProperty('--body-bg', u.bgTheme);
+  } else {
+    root.style.removeProperty('--body-bg');
+  }
+}
+
 export function stopBgm() {
   if (!_bgm) return;
   _bgm.pause(); _bgm.currentTime = 0;
@@ -386,8 +441,9 @@ export function pauseBgm() {
   if (_bgm && !_bgm.paused) _bgm.pause();
 }
 
-// 一時停止したBGMを再開
+// 一時停止したBGMを再開（プレビュー終了後用 - ユーザー手動ポーズ中はスルー）
 export function resumeBgm() {
+  if (store.bgmUserPaused) return;
   if (_bgm && _bgm.paused) _bgm.play().catch(() => {});
 }
 
@@ -402,9 +458,143 @@ function snapshotSubstitutes(srcGame) {
   const map = {};
   if (!srcGame?.teams) return map;
   ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
-    if (p.substitute > 0) map[`${side}:${i}`] = p.substitute;
+    map[`${side}:${i}`] = p.substitute ?? 0;  // 0も含める（みがわり使用直後に画像が切り替わるバグを防ぐ）
   }));
   return map;
+}
+
+function snapshotStatus(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = p.status || null;
+  }));
+  return map;
+}
+
+export function displayedStatus(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localStatusOverrides) return store.localStatusOverrides[key];
+  return pokemon?.status || null;
+}
+
+function snapshotStatStages(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = { ...(p.statStages || {}) };
+  }));
+  return map;
+}
+
+export function displayedStatStages(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localStatStageOverrides) return store.localStatStageOverrides[key];
+  return pokemon?.statStages || {};
+}
+
+function snapshotYawn(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = p.yawnCounter || 0;
+  }));
+  return map;
+}
+
+export function displayedYawnCounter(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localYawnOverrides) return store.localYawnOverrides[key];
+  return pokemon?.yawnCounter || 0;
+}
+
+function snapshotTaunt(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = p.taunt || 0;
+  }));
+  return map;
+}
+
+export function displayedTaunt(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localTauntOverrides) return store.localTauntOverrides[key];
+  return pokemon?.taunt || 0;
+}
+
+function snapshotEncore(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = p.encoreTurns || 0;
+  }));
+  return map;
+}
+
+export function displayedEncore(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localEncoreOverrides) return store.localEncoreOverrides[key];
+  return pokemon?.encoreTurns || 0;
+}
+
+function snapshotConfusion(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = !!p.confused;
+  }));
+  return map;
+}
+
+export function displayedConfusion(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localConfusionOverrides) return store.localConfusionOverrides[key];
+  return !!pokemon?.confused;
+}
+
+function snapshotHazards(srcGame) {
+  return {
+    A: { ...(srcGame?.hazards?.A || {}) },
+    B: { ...(srcGame?.hazards?.B || {}) },
+  };
+}
+
+function snapshotItemUsed(srcGame) {
+  const map = {};
+  if (!srcGame?.teams) return map;
+  ['A', 'B'].forEach(side => (srcGame.teams[side] || []).forEach((p, i) => {
+    map[`${side}:${i}`] = p.itemUsed || false;
+  }));
+  return map;
+}
+
+export function displayedItemUsed(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localItemUsedOverrides) return store.localItemUsedOverrides[key];
+  return pokemon?.itemUsed || false;
+}
+
+export function displayedItem(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localItemOverrides) return store.localItemOverrides[key];
+  return pokemon?.item || null;
+}
+
+export function displayedPerishSong(side, index, pokemon) {
+  const key = `${side}:${index}`;
+  if (key in store.localPerishSongOverrides) return store.localPerishSongOverrides[key];
+  return pokemon?.perishSongCounter || 0;
+}
+
+export function displayedHazards(side) {
+  if (store.localHazardOverrides) return store.localHazardOverrides[side] || {};
+  return store.game?.hazards?.[side] || {};
+}
+
+export function displayedWeather() {
+  if (store.localWeatherOverride !== null) return store.localWeatherOverride;
+  return store.game?.weather || null;
 }
 
 export function displayedSubstituteHp(side, index, pokemon) {
@@ -415,41 +605,102 @@ export function displayedSubstituteHp(side, index, pokemon) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function playEffects(effects) {
-  store.playingEffects = true;
-
-  // スイッチエフェクトは最初に「交換前」ポケモンを表示するために先読み
+// 先読みパス（pre-scan）：エフェクト再生前にバッジ・オーバーレイの初期表示値を設定する
+// playEffects より先に呼ぶことで、バトル開始演出の遅延中も正しい初期状態を維持できる
+function preScanEffects(effects) {
+  let foundTrickRoom = false;
+  let foundWeatherSet = false;
   for (const e of effects) {
     if (e.kind === 'switch' && e.side && e.fromIndex !== undefined) {
       store.localActiveOverrides[e.side] = e.fromIndex;
     }
+    if (e.kind === 'trickRoom' && !foundTrickRoom) {
+      store.localTrickRoomOverride = e.before;
+      foundTrickRoom = true;
+    }
+    if (e.kind === 'perishSong' && e.targetIndex !== undefined) {
+      const psKey = `${e.side}:${e.targetIndex}`;
+      if (!(psKey in store.localPerishSongOverrides)) {
+        store.localPerishSongOverrides[psKey] = e.before;
+      }
+    }
+    if (e.kind === 'item-lost' && e.targetIndex !== undefined && e.side) {
+      store.localItemOverrides[`${e.side}:${e.targetIndex}`] = e.item;
+    }
+    if (e.kind === 'item-swap') {
+      store.localItemOverrides[`${e.atkSide}:${e.atkIndex}`] = e.atkOldItem;
+      store.localItemOverrides[`${e.defSide}:${e.defIndex}`] = e.defOldItem;
+    }
+    if (e.kind === 'weather-set' && !foundWeatherSet) {
+      // 天候特性：特性ラベルが消えるまで旧天候バッジ／オーバーレイを維持する
+      store.localWeatherOverride = e.before ? { type: e.before, turns: null } : { type: null, turns: 0 };
+      foundWeatherSet = true;
+    }
+    if (e.kind === 'weather-tick' && !foundWeatherSet) {
+      // ターン終了天候カウント：エフェクト再生前は旧カウントで表示
+      store.localWeatherOverride = { type: e.before.type, turns: e.before.turns };
+      foundWeatherSet = true;
+    }
+    if (e.kind === 'encore' && e.targetIndex !== undefined && e.side) {
+      const encKey = `${e.side}:${e.targetIndex}`;
+      if (!(encKey in store.localEncoreOverrides)) {
+        store.localEncoreOverrides[encKey] = 0;
+      }
+    }
   }
+}
 
-  for (const e of effects) {
+async function playEffects(effects) {
+  store.playingEffects = true;
+
+  // 先読みパス（preScanEffects）は updateState 側で既に実行済み
+  // バトル開始時の遅延中も正しい初期値が維持される
+  // ※ 通常ターンでも preScanEffects が先に走るので、ここでは再実行しない
+
+  for (let i = 0; i < effects.length; i++) {
+    const e = effects[i];
     store.localEffectMessage = e.message || '';
 
     if (e.kind === 'attack') {
       store.localAnim = { side: e.side, type: 'attack' };
-      const abilityText = (e.abilityLabels || []).map(x => x.text).filter(Boolean).join('・');
       store.localBurstMove[e.side] = e.moveName || '';
-      store.localBurstAbility[e.side] = abilityText;
+      // 特性・持ち物ラベルは技バーストに表示しない
       await sleep(800);
       store.localAnim = null;
       store.localBurstMove[e.side] = '';
-      store.localBurstAbility[e.side] = '';
       await sleep(300);
 
     } else if (e.kind === 'hit') {
-      store.localAnim = { side: e.side, type: 'hit' };
+      // 回復ラベルのみならキラキラ演出（healトーンのみのとき）
+      const isHeal = (e.labels || []).length > 0 && (e.labels || []).every(l => l.tone === 'heal');
+
+      // 次がrecoilなら同時にラベルを出してHP更新は分離する
+      const nextE = effects[i + 1];
+      const hasRecoil = nextE?.kind === 'recoil' && nextE.side !== e.side;
+
+      store.localAnim = { side: e.side, type: isHeal ? 'heal' : 'hit' };
       store.localEffectTags[e.side] = e.labels || [];
-      // タグ表示中は再描画を抑えるため、HP更新はタグ消去後に行う
       await sleep(950);
       store.localEffectTags[e.side] = [];
       store.localAnim = null;
       if (e.hpAfter !== undefined && e.targetIndex !== undefined) {
         store.localHpOverrides[`${e.side}:${e.targetIndex}`] = e.hpAfter;
       }
-      await sleep(380);
+      await sleep(200);
+
+      if (hasRecoil) {
+        // ダメージラベル消去後に反動ラベルを表示（逐次）
+        store.localEffectTags[nextE.side] = [{ text: '反動', tone: 'status-brn' }];
+        store.localAnim = { side: nextE.side, type: 'hit' };
+        await sleep(820);
+        store.localEffectTags[nextE.side] = [];
+        store.localAnim = null;
+        if (nextE.hpAfter !== undefined && nextE.targetIndex !== undefined) {
+          store.localHpOverrides[`${nextE.side}:${nextE.targetIndex}`] = nextE.hpAfter;
+        }
+        await sleep(200);
+        i++; // recoilエフェクトをスキップ
+      }
 
     } else if (e.kind === 'miss') {
       store.localEffectTags[e.side] = [{ text: e.text || '外れた', tone: 'miss' }];
@@ -471,10 +722,18 @@ async function playEffects(effects) {
       store.localEffectTags[e.side] = e.labels || [{ text: e.ability || '特性', tone: 'ability-blue' }];
       await sleep(1100);
       store.localEffectTags[e.side] = [];
+      // 能力変化を伴う特性（かそく・ムラっけ等）はラベル消去後に矢印を段階的に更新
+      if (e.statStages !== undefined && e.statTargetIndex !== undefined && e.side) {
+        store.localStatStageOverrides[`${e.side}:${e.statTargetIndex}`] = e.statStages;
+      }
+      // 設置除去はラベル消去後にハザードバッジを更新
+      if (e.updateHazards && store.localHazardOverrides && e.side) {
+        store.localHazardOverrides[e.side] = { ...(store.game?.hazards?.[e.side] || {}) };
+      }
       await sleep(220);
 
     } else if (e.kind === 'faint') {
-      store.localBurstMove[e.side] = '気絶';
+      store.localEffectTags[e.side] = [{ text: e.text || '気絶', tone: 'miss' }];
       if (e.hpAfter !== undefined && e.targetIndex !== undefined) {
         store.localHpOverrides[`${e.side}:${e.targetIndex}`] = e.hpAfter;
       }
@@ -484,24 +743,46 @@ async function playEffects(effects) {
         store.faintVisualReady[`${e.side}:${e.targetIndex}`] = true;
       }
       store.localAnim = null;
-      store.localBurstMove[e.side] = '';
+      store.localEffectTags[e.side] = [];
       await sleep(300);
 
     } else if (e.kind === 'status') {
       const STATUS_NAMES = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
+      const STATUS_TONES = { brn: 'status-brn', par: 'status-par', psn: 'status-psn', tox: 'status-tox', slp: 'status-slp', frz: 'status-frz' };
       if (e.status) {
-        store.localEffectTags[e.side] = [{ text: STATUS_NAMES[e.status] || e.status, tone: 'status-' + e.status }];
+        store.localEffectTags[e.side] = [{ text: STATUS_NAMES[e.status] || e.status, tone: STATUS_TONES[e.status] || 'ability-blue' }];
+        await sleep(1000);
+        store.localEffectTags[e.side] = [];
+        // ラベルが消えた後にバッジを表示（スナップショットを新ステータスで上書き）
+        if (e.targetIndex !== undefined) {
+          store.localStatusOverrides[`${e.side}:${e.targetIndex}`] = e.status;
+          // ねむりになった場合はねむけバッジを消す
+          if (e.status === 'slp') store.localYawnOverrides[`${e.side}:${e.targetIndex}`] = 0;
+        }
+        await sleep(200);
       } else {
         store.localEffectTags[e.side] = [{ text: '回復！', tone: 'heal' }];
+        await sleep(1100);
+        store.localEffectTags[e.side] = [];
+        // 回復アニメーション後にバッジを消す
+        if (e.targetIndex !== undefined) {
+          store.localStatusOverrides[`${e.side}:${e.targetIndex}`] = null;
+        }
+        await sleep(220);
       }
-      await sleep(1100);
-      store.localEffectTags[e.side] = [];
-      await sleep(220);
 
     } else if (e.kind === 'stat') {
       store.localEffectTags[e.side] = e.labels || [{ text: '能力変化', tone: 'ability-blue' }];
       await sleep(1000);
       store.localEffectTags[e.side] = [];
+      // ラベルが消えた後に能力変化矢印を段階的に更新
+      if (e.targetIndex !== undefined) {
+        if (e.statStages !== undefined) {
+          store.localStatStageOverrides[`${e.side}:${e.targetIndex}`] = e.statStages;
+        } else {
+          delete store.localStatStageOverrides[`${e.side}:${e.targetIndex}`];
+        }
+      }
       await sleep(200);
 
     } else if (e.kind === 'damage') {
@@ -518,6 +799,13 @@ async function playEffects(effects) {
       }
       await sleep(320);
 
+    } else if (e.kind === 'substitute-activate') {
+      // みがわり作成：HP減少後に画像を切り替える
+      if (e.targetIndex !== undefined && e.subHp !== undefined) {
+        store.localSubstituteOverrides[`${e.side}:${e.targetIndex}`] = e.subHp;
+      }
+      await sleep(200);
+
     } else if (e.kind === 'substitute-break') {
       store.localEffectTags[e.side] = [{ text: 'みがわり消滅！', tone: 'ability-blue' }];
       await sleep(1000);
@@ -526,6 +814,161 @@ async function playEffects(effects) {
       if (e.targetIndex !== undefined) {
         store.localSubstituteOverrides[`${e.side}:${e.targetIndex}`] = 0;
       }
+
+    } else if (e.kind === 'yawn') {
+      store.localEffectTags[e.side] = [{ text: 'ねむけをさそわれた', tone: 'status-slp' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localYawnOverrides[`${e.side}:${e.targetIndex}`] = 1;
+      await sleep(200);
+
+    } else if (e.kind === 'taunt') {
+      store.localEffectTags[e.side] = [{ text: 'ちょうはつされた', tone: 'ability-red' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localTauntOverrides[`${e.side}:${e.targetIndex}`] = e.turns || 3;
+      await sleep(200);
+
+    } else if (e.kind === 'taunt-end') {
+      store.localEffectTags[e.side] = [{ text: 'ちょうはつ回復', tone: 'ability-blue' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localTauntOverrides[`${e.side}:${e.targetIndex}`] = 0;
+      await sleep(200);
+
+    } else if (e.kind === 'encore') {
+      store.localEffectTags[e.side] = [{ text: 'アンコール！', tone: 'ability-red' }];
+      await sleep(1100);
+      store.localEffectTags[e.side] = [];
+      // ラベルが消えた後にアンコールバッジを表示
+      if (e.targetIndex !== undefined) store.localEncoreOverrides[`${e.side}:${e.targetIndex}`] = e.turns || 3;
+      await sleep(200);
+
+    } else if (e.kind === 'encore-end') {
+      store.localEffectTags[e.side] = [{ text: 'アンコール終了', tone: 'ability-blue' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localEncoreOverrides[`${e.side}:${e.targetIndex}`] = 0;
+      await sleep(200);
+
+    } else if (e.kind === 'confusion') {
+      // ラベル表示→消去後にバッジを表示
+      store.localEffectTags[e.side] = [{ text: 'こんらん！', tone: 'ability-red' }];
+      await sleep(1100);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localConfusionOverrides[`${e.side}:${e.targetIndex}`] = true;
+      await sleep(200);
+
+    } else if (e.kind === 'confusion-end') {
+      // 「こんらんが解けた」ラベル表示→消去後にバッジを非表示
+      store.localEffectTags[e.side] = [{ text: 'こんらん解除', tone: 'ability-blue' }];
+      await sleep(1100);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) store.localConfusionOverrides[`${e.side}:${e.targetIndex}`] = false;
+      await sleep(200);
+
+    } else if (e.kind === 'weather-set') {
+      // 特性ラベル消去後（ability ハンドラ完了後）に天候バッジを更新
+      store.localWeatherOverride = e.after ? { type: e.after, turns: e.turns } : null;
+      await sleep(100);
+
+    } else if (e.kind === 'weather-tick') {
+      if (e.ended) {
+        // 「○○がやんだ！」メッセージを表示してからバッジ／オーバーレイを消す
+        await sleep(900); // localEffectMessage でメッセージ表示中
+        store.localWeatherOverride = null; // サーバー値（type:null）へ → バッジ消去
+        await sleep(200);
+      } else {
+        // カウント更新：サーバー値（デクリメント済み）を即反映
+        store.localWeatherOverride = null;
+        await sleep(150);
+      }
+
+    } else if (e.kind === 'item-swap') {
+      // 両者に「もちものがすりかわった」ラベルを同時表示
+      store.localEffectTags[e.atkSide] = [{ text: 'もちものが\nすりかわった！', tone: 'ability-blue' }];
+      store.localEffectTags[e.defSide] = [{ text: 'もちものが\nすりかわった！', tone: 'ability-blue' }];
+      await sleep(1100);
+      store.localEffectTags[e.atkSide] = [];
+      store.localEffectTags[e.defSide] = [];
+      // ラベル消去後に持ち物バッジを新しい持ち物（サーバー値）に切り替え
+      delete store.localItemOverrides[`${e.atkSide}:${e.atkIndex}`];
+      delete store.localItemOverrides[`${e.defSide}:${e.defIndex}`];
+      await sleep(300);
+
+    } else if (e.kind === 'pain-split') {
+      store.localEffectTags[e.atkSide] = [{ text: 'HP平均化', tone: 'ability-blue' }];
+      store.localEffectTags[e.defSide] = [{ text: 'HP平均化', tone: 'ability-blue' }];
+      await sleep(1000);
+      store.localEffectTags[e.atkSide] = [];
+      store.localEffectTags[e.defSide] = [];
+      await sleep(200);
+      if (e.atkTargetIndex !== undefined) store.localHpOverrides[`${e.atkSide}:${e.atkTargetIndex}`] = e.atkHpAfter;
+      if (e.defTargetIndex !== undefined) store.localHpOverrides[`${e.defSide}:${e.defTargetIndex}`] = e.defHpAfter;
+      await sleep(400);
+
+    } else if (e.kind === 'recoil') {
+      store.localEffectTags[e.side] = [{ text: '反動', tone: 'status-brn' }];
+      store.localAnim = { side: e.side, type: 'hit' };
+      await sleep(850);
+      store.localEffectTags[e.side] = [];
+      store.localAnim = null;
+      if (e.hpAfter !== undefined && e.targetIndex !== undefined) {
+        store.localHpOverrides[`${e.side}:${e.targetIndex}`] = e.hpAfter;
+      }
+      await sleep(280);
+
+    } else if (e.kind === 'stat-reset') {
+      store.localEffectTags[e.side] = [{ text: '能力変化リセット', tone: 'ability-blue' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      if (e.targetIndex !== undefined) delete store.localStatStageOverrides[`${e.side}:${e.targetIndex}`];
+      await sleep(200);
+
+    } else if (e.kind === 'trickRoom') {
+      // バースト/メッセージ再生後にバッジ表示を更新
+      store.localTrickRoomOverride = e.after;
+      await sleep(200);
+
+    } else if (e.kind === 'perishSong') {
+      // ほろびバッジをメッセージ再生後に更新
+      if (e.targetIndex !== undefined) {
+        store.localPerishSongOverrides[`${e.side}:${e.targetIndex}`] = e.after;
+      }
+      await sleep(200);
+
+    } else if (e.kind === 'hazard-set') {
+      store.localEffectTags[e.side] = [{ text: e.text || 'まきびし', tone: 'ability-blue' }];
+      await sleep(1000);
+      store.localEffectTags[e.side] = [];
+      // ラベル消去後にハザードバッジを更新（e.hazards = 設置直後の中間状態）
+      if (store.localHazardOverrides && e.side) {
+        store.localHazardOverrides[e.side] = e.hazards ? { ...e.hazards } : { ...(store.game?.hazards?.[e.side] || {}) };
+      }
+      await sleep(200);
+
+    } else if (e.kind === 'item-lost') {
+      // 「○○を失った」ラベルが消えた直後にここが実行される → 持ち物バッジを非表示に
+      if (e.targetIndex !== undefined && e.side) {
+        store.localItemOverrides[`${e.side}:${e.targetIndex}`] = null;
+      }
+      await sleep(100);
+
+    } else if (e.kind === 'healing-wish') {
+      // 「ねがいが叶った」ラベルを表示し、消えた後にHP全回復・状態異常回復を反映
+      store.localEffectTags[e.side] = [{ text: 'ねがいが叶った！', tone: 'heal' }];
+      store.localAnim = { side: e.side, type: 'heal' };
+      await sleep(1100);
+      store.localEffectTags[e.side] = [];
+      store.localAnim = null;
+      // ラベル消去後にHP・ステータスを更新
+      if (e.hpAfter !== undefined && e.targetIndex !== undefined) {
+        store.localHpOverrides[`${e.side}:${e.targetIndex}`] = e.hpAfter;
+      }
+      if (e.targetIndex !== undefined) {
+        store.localStatusOverrides[`${e.side}:${e.targetIndex}`] = null;
+      }
+      await sleep(300);
 
     } else {
       await sleep(900);
@@ -538,13 +981,29 @@ async function playEffects(effects) {
   store.localHpOverrides = {};
   store.localSubstituteOverrides = {};
   store.localActiveOverrides = {};
+  store.localStatusOverrides = {};
+  store.localStatStageOverrides = {};
+  store.localYawnOverrides = {};
+  store.localTauntOverrides = {};
+  store.localHazardOverrides = null;
+  store.localTrickRoomOverride = null;
+  store.localWeatherOverride = null;
+  store.localPerishSongOverrides = {};
+  store.localItemUsedOverrides = {};
+  store.localItemOverrides = {};
+  store.localEncoreOverrides = {};
+  store.localConfusionOverrides = {};
   if (store.game?.winner) {
     store.resultStampVisible = true;
     playBgm('ジムリーダーに勝利.mp3', false);
   }
 
   // 気絶・ピボット技による強制交代：自分のサイドなら自動でポップアップ表示
-  if (store.game?.forceSwitch && store.game.forceSwitch === store.role) {
-    openModal('forceSwitch');
+  // forceSwitch === 'AB' の場合は両プレイヤーが同時にポップアップを表示
+  if (store.game?.forceSwitch) {
+    const fs = store.game.forceSwitch;
+    if (fs === 'AB' || fs === store.role) {
+      openModal('forceSwitch');
+    }
   }
 }

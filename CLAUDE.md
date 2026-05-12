@@ -94,6 +94,34 @@ MOVE_EFFECTS['技名'] = (attacker, defender, dmg, ctx) => {
 
 `data.js` の `DEX` にエントリ追加。`ABILITY_BY_POKEMON` と `POKEAPI_SPRITE_IDS` も合わせて追記。
 
+## ⚠️ 実装時の必須確認事項（過去バグの再発防止）
+
+### 実装前に必ずやること
+
+1. **MOVE_EFFECTS を追加する前に既存定義を検索する**
+   ```
+   Grep で MOVE_EFFECTS['技名'] を検索してから追加する
+   ```
+   → 同名の定義が2つあると後者が前者を上書きする（JSの仕様）。過去にアンコールで発生。
+
+2. **engine.js の doSwitch() に追加した処理は server.js にも追加する**
+   - `server.js` の `/force-switch` エンドポイントは `doSwitch()` を**経由せず**インラインで交代処理を実装している
+   - インライン処理は2箇所ある：`isBothSwitch`（両者同時交代）と単独強制交代
+   - `doSwitch()` に追加した処理（healingWish等）は両方のパスにも追加が必要
+   - 過去にいやしのねがいで発生。
+
+3. **実装後にサーバーを自分で再起動する**
+   - サーバー側ファイル（game/*.js, server.js）を変更したら、**ユーザーに頼まず自分で** サーバーを再起動する
+   - 再起動コマンド: `pkill -f "node server.js"; sleep 0.3; node server.js &`
+   - 再起動後は `curl -s http://localhost:3000/ | head -3` で起動確認する
+
+### 実装手順チェックリスト
+- [ ] 追加するものが既存ファイルに既に実装されていないか Grep で確認
+- [ ] エフェクトの種別（kind）を新設した場合、store.js の effect handler・pre-scan・cleanup の3箇所すべてに追加したか確認
+- [ ] engine.js の doSwitch() に追加した処理が server.js のインライン交代処理にも反映されているか確認
+- [ ] サーバー側ファイルを変更した場合、自分でサーバーを再起動して起動確認した
+- [ ] **実装完了後、元の指示を一項目ずつ読み直し、すべて仕様に反映されているか確認する。漏れがあれば即追加実装する**
+
 ## 既存の特性一覧
 
 | 特性 | 種別 | 効果 |

@@ -1,5 +1,5 @@
 import { defineComponent, computed, ref, watch, nextTick } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, enemy, abilityOfPokemon, effectiveness, effText, effGroupLabel, closeModal, closeStackModal, setRole, setUserName, api, enterGame, leaveGame } from '../store.js';
+import { store, enemy, abilityOfPokemon, effectiveness, effText, effGroupLabel, hpClass, closeModal, closeStackModal, setRole, setUserName, api, enterGame, leaveGame } from '../store.js';
 
 const VALID_USERS = ['ひびき', 'くさの', 'かいと'];
 
@@ -99,6 +99,73 @@ export default defineComponent({
       { key: 'hail',  name: 'あられ',             emoji: '❄️', desc: '氷タイプ以外のポケモンが毎ターン最大HPの1/16ダメージを受ける。5ターン継続。' },
     ];
 
+    // --- 揮発性状態 ---
+    const CONDITION_INFO = [
+      {
+        key: 'taunt',
+        name: 'ちょうはつ',
+        color: '#9b59b6',
+        desc: '3ターン間、変化技（ステータス変化・回復・設置技など）を使用できなくなる。バッジにカウントを表示し、0になると自動解除。',
+        points: [],
+      },
+      {
+        key: 'yawn',
+        name: 'ねむけ（あくび）',
+        color: '#3c4864',
+        desc: 'あくびを受けたターンの次のターン終了時にねむり状態になる。',
+        points: [
+          '交代すると解除される（ねむけは引き継がれない）',
+          '既に眠り状態・他の状態異常があるポケモンには無効',
+        ],
+      },
+      {
+        key: 'substitute',
+        name: 'みがわり',
+        color: '#c07028',
+        desc: '最大HPの1/4を消費してみがわりを作成。みがわりのHPが残っている間、相手の攻撃ダメージや変化技の多くをみがわりが身代わりに受ける。バッジに残りHPを表示。',
+        points: [
+          'みがわり中は状態異常技・能力変化技が無効',
+          'うたう・ねむりごな等の音系技はみがわりを貫通する',
+          'いたみわけ・クリアスモッグもみがわりを貫通する',
+          'みがわりが消えると以降は自分にダメージが通る',
+        ],
+      },
+      {
+        key: 'destinyBond',
+        name: 'みちづれ',
+        color: '#6b5bff',
+        desc: '使用したターン中に相手の攻撃で自分が気絶した場合、相手も道連れにして気絶させる。',
+        points: [
+          '自分が倒されないと発動しない',
+          '連続使用すると失敗する',
+          '交代すると解除される',
+          '発動時は相手より先に気絶扱いとなり、みちづれ発動者が先に交代する',
+        ],
+      },
+      {
+        key: 'perishSong',
+        name: 'ほろびのうた',
+        color: '#7a0000',
+        desc: '技を使ったターン終了時からカウント3→2→1→0と減り、0になったターン終了時に気絶する。ほろびのうたを使ったとき、フィールドにいる両者のポケモンにバッジが表示される。',
+        points: [
+          '交代すると解除される（交代したポケモンのほろびが消える）',
+          'すでにほろび状態のポケモンへの再使用はカウントがリセットされない',
+          '両者が同時に0になった場合、素早さ順で先に行動するポケモンが先に気絶し先に交代する',
+        ],
+      },
+      {
+        key: 'trickRoom',
+        name: 'トリックルーム',
+        color: '#6a1fa0',
+        desc: '5ターン間、素早さが低いほど先に行動するよう順番が逆転するフィールド効果。バッジにカウントを表示。',
+        points: [
+          '先制技（優先度+1以上）の優先度はそのまま有効',
+          '発動中に再度使用すると即時解除される',
+          'トリックルーム自体の使用は最後に行動する（優先度−7）',
+        ],
+      },
+    ];
+
     // --- たたかう ---
     const fightPokemon = computed(() => {
       const g = game.value;
@@ -122,9 +189,33 @@ export default defineComponent({
       const m = data.value?.MOVES?.[mn];
       return m ? adjustedMove(fightPokemon.value, fightTarget.value, m) : null;
     }
+    // 変化技の状態異常種別マップ（タイプ免疫チェック用）
+    const STATUS_MOVE_STATUS_MAP = {
+      'でんじは': 'par', 'ほっぺすりすり': 'par',
+      'おにび': 'brn',
+      'どくどく': 'tox',
+      'キノコのほうし': 'slp', 'ねむりごな': 'slp', 'あくまのキッス': 'slp', 'うたう': 'slp', 'さいみんじゅつ': 'slp',
+    };
+    const STATUS_TYPE_IMMUNITY_MAP = {
+      brn: ['ほのお'], par: ['でんき'],
+      psn: ['どく', 'はがね'], tox: ['どく', 'はがね'],
+      frz: ['こおり'],
+    };
+    // 粉技（草タイプ無効）
+    const POWDER_MOVES_SET = new Set(['ねむりごな', 'キノコのほうし']);
     function fightEff(mn) {
       const m = data.value?.MOVES?.[mn];
       if (!m || !fightTarget.value) return '';
+      // 粉技：草タイプには無効
+      if (POWDER_MOVES_SET.has(mn) && fightTarget.value.types.includes('くさ')) return '効果なし';
+      // 変化技：状態異常タイプ免疫をチェック
+      if (m.category === '変化') {
+        const statusId = STATUS_MOVE_STATUS_MAP[mn];
+        if (statusId) {
+          const immunity = STATUS_TYPE_IMMUNITY_MAP[statusId] || [];
+          if (immunity.some(t => fightTarget.value.types.includes(t))) return '効果なし';
+        }
+      }
       return effText(effectiveness(m.type, fightTarget.value.types));
     }
     function submitMove(mn) { closeModal(); api('/command', { side: role.value, cmd: { type: 'move', moveName: mn } }); }
@@ -135,6 +226,7 @@ export default defineComponent({
       if (fightLocked.value) return true;
       if ((fightPokemon.value?.movePP?.[mn] ?? 1) <= 0) return true;
       if (encored.value && mn !== encored.value) return true;
+      if (fightPokemon.value?.taunt > 0 && data.value?.MOVES?.[mn]?.category === '変化') return true;
       return false;
     }
 
@@ -217,7 +309,10 @@ export default defineComponent({
     }
 
     // --- こうかん ---
-    const isForceSwitch = computed(() => game.value?.forceSwitch === role.value);
+    const isForceSwitch = computed(() => {
+      const fs = game.value?.forceSwitch;
+      return fs === role.value || fs === 'AB';
+    });
     const switchCmd = computed(() => game.value?.commands?.[role.value] || null);
     const switchLocked = computed(() => !isForceSwitch.value && !!switchCmd.value);
 
@@ -252,24 +347,55 @@ export default defineComponent({
       return g.pickPool?.[tgt]?.length ? g.pickPool[tgt] : (g.teams?.[tgt] || []).map(m => m.name);
     });
 
+    // --- 相手チームからポケモンオブジェクトを取得（HP・状態異常の表示用） ---
+    function getOpponentPokemon(name) {
+      const g = game.value;
+      if (!g || !role.value) return null;
+      const opp = (role.value === 'A' || role.value === 'B') ? enemy(role.value) : 'B';
+      return (g.teams?.[opp] || []).find(m => m.name === name) || null;
+    }
+
+    // --- 相手ポケモンが場に出たことがあるか（revealed） ---
+    function getOpponentRevealed(name) {
+      const g = game.value;
+      if (!g || !role.value) return false;
+      const opp = (role.value === 'A' || role.value === 'B') ? enemy(role.value) : 'B';
+      const idx = (g.teams?.[opp] || []).findIndex(m => m.name === name);
+      if (idx === -1) return false;
+      return !!(g.revealed?.[opp]?.[idx]);
+    }
+
+    // --- スタックモーダルのポケモンが場に出たことがあるか（相手のみ判定） ---
+    const stackPokemonRevealed = computed(() => {
+      if (!store.stackModalProps?.isOpponent) return true;
+      return getOpponentRevealed(store.stackModalProps?.name);
+    });
+
     // --- スタックモーダル詳細を開く ---
-    function openStack(name, isOpponent = false, item = null, ability = null) {
+    function openStack(name, isOpponent = false, item = null, ability = null, pokemon = null) {
       store.stackModal = 'details';
-      store.stackModalProps = { name, isOpponent, item, ability };
+      store.stackModalProps = { name, isOpponent, item, ability, pokemon };
     }
 
     // --- 詳細で使う実際の特性名（トレース等でgame状態が変わっている場合はそちらを優先） ---
     const detailsAbility = computed(() => store.modalProps?.ability || abilityOfPokemon(store.modalProps?.name));
     const stackAbility = computed(() => store.stackModalProps?.ability || abilityOfPokemon(store.stackModalProps?.name));
 
-    // --- 持ち物：props未渡しのときはDEXのITEM_BY_POKEMONをフォールバックとして使用
-    // （どこからopenModal/openStackしても必ず持ち物が表示されるように、ここで一元解決する）
+    // --- バトル中の生きたポケモンオブジェクト（HP・PP・状態異常等のリアルタイム表示に使用） ---
+    const detailsPokemon = computed(() => store.modalProps?.pokemon || null);
+    const stackPokemon = computed(() => store.stackModalProps?.pokemon || null);
+
+    // --- 持ち物：バトル中はdetailsPokemon優先、それ以外はDEXのITEM_BY_POKEMONをフォールバック ---
     const detailsItem = computed(() =>
       store.modalProps?.item ?? data.value?.ITEM_BY_POKEMON?.[store.modalProps?.name] ?? null
     );
     const stackItem = computed(() =>
       store.stackModalProps?.item ?? data.value?.ITEM_BY_POKEMON?.[store.stackModalProps?.name] ?? null
     );
+
+    // --- 状態異常ラベル ---
+    const STATUS_LABELS_MODAL = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
+    function statusLabelModal(s) { return STATUS_LABELS_MODAL[s] || s; }
 
     // --- 確認モーダル送信（closeModal前にpropsを取り出す） ---
     function submitConfirmSwitch() {
@@ -314,12 +440,14 @@ export default defineComponent({
       getDefGroups, currentOpponent, moveEffForDetail,
       typeChartTab, setTypeChartTab,
       typeChartSelected, typeChartAtkGroups, typeChartDefGroups, selectTypeChart,
-      STATUS_INFO, WEATHER_INFO,
+      STATUS_INFO, WEATHER_INFO, CONDITION_INFO,
       fightPokemon, fightTarget, fightSelectedCmd, fightLocked, fightMoveStyle, fightAdj, fightEff, submitMove,
       encored, isMoveDisabled, isTrapped,
       isForceSwitch, switchCmd, switchLocked, switchConfirm,
-      fullPartyForSwitch, opponentNames, openStack,
+      fullPartyForSwitch, opponentNames, openStack, getOpponentPokemon, getOpponentRevealed,
+      stackPokemonRevealed,
       detailsAbility, stackAbility, detailsItem, stackItem,
+      detailsPokemon, stackPokemon, statusLabelModal, hpClass,
       submitConfirmSwitch, submitConfirmSurrender,
     };
   },
@@ -411,7 +539,7 @@ export default defineComponent({
                 v-for="mn in fightPokemon.moves"
                 :key="mn"
                 class="move-btn"
-                :class="{ 'command-selected': fightSelectedCmd?.type === 'move' && fightSelectedCmd.moveName === mn, 'command-locked': fightLocked, 'move-pp-empty': (fightPokemon.movePP?.[mn] ?? 1) <= 0, 'move-encore-locked': encored && mn !== encored }"
+                :class="{ 'command-selected': fightSelectedCmd?.type === 'move' && fightSelectedCmd.moveName === mn, 'command-locked': fightLocked, 'move-pp-empty': (fightPokemon.movePP?.[mn] ?? 1) <= 0, 'move-encore-locked': encored && mn !== encored, 'move-taunt-locked': fightPokemon.taunt > 0 && data.MOVES[mn]?.category === '変化' }"
                 :style="fightMoveStyle(data.MOVES[mn]?.type)"
                 :disabled="isMoveDisabled(mn)"
                 @click="submitMove(mn)"
@@ -440,7 +568,7 @@ export default defineComponent({
               <button
                 v-for="entry in fullPartyForSwitch" :key="entry.name"
                 :class="{ 'command-selected': switchCmd?.type === 'switch' && switchCmd.index === entry.teamIdx, 'command-locked': switchLocked }"
-                :disabled="entry.notSelected || switchLocked || (!isForceSwitch && entry.teamIdx === game.active[role]) || entry.teamMon?.fainted || (!isForceSwitch && isTrapped)"
+                :disabled="entry.notSelected || switchLocked || entry.teamIdx === game.active[role] || entry.teamMon?.fainted || (!isForceSwitch && isTrapped)"
                 @click="!entry.notSelected && switchConfirm(entry.teamIdx)"
               >
                 {{ switchCmd?.type === 'switch' && switchCmd.index === entry.teamIdx ? '✓ ' : '' }}<sprite-img :mon="data.DEX[entry.name]" cls="mini-sprite" /> {{ entry.name }}
@@ -450,8 +578,11 @@ export default defineComponent({
                 <span class="types" style="justify-content:center;margin-top:4px">
                   <type-badge v-for="t in data.DEX[entry.name].types" :key="t" :type="t" />
                 </span>
-                <span v-if="entry.teamMon" class="small">HP {{ Math.max(0, entry.teamMon.hp) }}/{{ entry.teamMon.maxHp }}</span><br>
-                <span style="text-decoration:underline" @click.stop="openStack(entry.name, false, entry.teamMon?.item, entry.teamMon?.ability)">詳細</span>
+                <span v-if="entry.teamMon?.status && !entry.teamMon?.fainted" class="poke-status-badge" :class="'status-' + entry.teamMon.status" style="margin-left:4px;vertical-align:middle;font-size:10px">{{ statusLabelModal(entry.teamMon.status) }}</span>
+                <div v-if="entry.teamMon" class="party-hpbar" style="margin-top:4px">
+                  <div class="hpfill" :class="hpClass(Math.round(Math.max(0, entry.teamMon.hp) / entry.teamMon.maxHp * 100))" :style="{ width: Math.round(Math.max(0, entry.teamMon.hp) / entry.teamMon.maxHp * 100) + '%' }"></div>
+                </div>
+                <span style="text-decoration:underline" @click.stop="openStack(entry.name, false, entry.teamMon?.item, entry.teamMon?.ability, entry.teamMon)">詳細</span>
               </button>
             </div>
             <div v-if="switchLocked" class="command-summary">コマンド選択済みです。相手の選択完了まで変更できません。</div>
@@ -481,20 +612,25 @@ export default defineComponent({
                 <span class="types" style="justify-content:center;margin-top:4px">
                   <type-badge v-for="t in data.DEX[entry.name].types" :key="t" :type="t" />
                 </span>
-                <span v-if="entry.teamMon" class="small">HP {{ Math.max(0, entry.teamMon.hp) }}/{{ entry.teamMon.maxHp }}</span><br>
-                <span style="text-decoration:underline" @click.stop="openStack(entry.name, false, entry.teamMon?.item, entry.teamMon?.ability)">詳細</span>
+                <span v-if="entry.teamMon?.status && !entry.teamMon?.fainted" class="poke-status-badge" :class="'status-' + entry.teamMon.status" style="margin-left:4px;vertical-align:middle;font-size:10px">{{ statusLabelModal(entry.teamMon.status) }}</span>
+                <div v-if="entry.teamMon" class="party-hpbar" style="margin-top:4px">
+                  <div class="hpfill" :class="hpClass(Math.round(Math.max(0, entry.teamMon.hp) / entry.teamMon.maxHp * 100))" :style="{ width: Math.round(Math.max(0, entry.teamMon.hp) / entry.teamMon.maxHp * 100) + '%' }"></div>
+                </div>
+                <span style="text-decoration:underline" @click.stop="openStack(entry.name, false, entry.teamMon?.item, entry.teamMon?.ability, entry.teamMon)">詳細</span>
               </button>
             </div>
             <div v-if="switchLocked" class="command-summary">コマンド選択済みです。相手の選択完了まで変更できません。</div>
             <!-- 相手の6体 -->
             <h3 style="margin-top:16px;margin-bottom:8px">相手のパーティ</h3>
             <div class="battle-opponent-party">
-              <div v-for="name in opponentNames" :key="name" class="battle-opponent-card">
-                <div><sprite-img :mon="data.DEX[name]" cls="mini-sprite" /> <b>{{ name }}</b></div>
+              <div v-for="name in opponentNames" :key="name" class="battle-opponent-card" :class="{ 'opponent-revealed': getOpponentRevealed(name) }">
+                <div><sprite-img :mon="data.DEX[name]" cls="mini-sprite" /> <b>{{ name }}</b>
+                  <span v-if="getOpponentRevealed(name) && getOpponentPokemon(name)?.status && !getOpponentPokemon(name)?.fainted" class="poke-status-badge" :class="'status-' + getOpponentPokemon(name).status" style="margin-left:4px;font-size:10px">{{ statusLabelModal(getOpponentPokemon(name).status) }}</span>
+                </div>
                 <div class="types" style="justify-content:center">
                   <type-badge v-for="t in data.DEX[name].types" :key="t" :type="t" />
                 </div>
-                <button class="mini-btn" style="margin-top:6px" @click="openStack(name, true)">詳細</button>
+                <button class="mini-btn" style="margin-top:6px" @click="openStack(name, true, null, null, getOpponentPokemon(name))">詳細</button>
               </div>
             </div>
           </div>
@@ -551,7 +687,7 @@ export default defineComponent({
                   <div class="types" style="justify-content:center">
                     <type-badge v-for="t in data.DEX[name].types" :key="t" :type="t" />
                   </div>
-                  <button class="mini-btn" style="margin-top:6px" @click="openStack(name, true)">詳細</button>
+                  <button class="mini-btn" style="margin-top:6px" @click="openStack(name, true, null, null, getOpponentPokemon(name))">詳細</button>
                 </div>
               </div>
             </div>
@@ -581,6 +717,7 @@ export default defineComponent({
           <div class="info-tabs">
             <button :class="['info-tab', typeChartTab === 'typeChart' && 'active']" @click="setTypeChartTab('typeChart')">タイプ相性</button>
             <button :class="['info-tab', typeChartTab === 'status' && 'active']" @click="setTypeChartTab('status')">状態異常</button>
+            <button :class="['info-tab', typeChartTab === 'condition' && 'active']" @click="setTypeChartTab('condition')">状態</button>
             <button :class="['info-tab', typeChartTab === 'weather' && 'active']" @click="setTypeChartTab('weather')">天候</button>
           </div>
 
@@ -625,6 +762,22 @@ export default defineComponent({
             </div>
           </template>
 
+          <!-- 状態タブ -->
+          <template v-else-if="typeChartTab === 'condition'">
+            <div class="small" style="margin-bottom:8px">バトル中にポケモンのバッジとして表示される揮発性の状態です。</div>
+            <div class="info-card-list">
+              <div v-for="c in CONDITION_INFO" :key="c.key" class="info-card">
+                <div class="info-card-head">
+                  <span class="poke-status-badge" :style="{ background: c.color }">{{ c.name }}</span>
+                </div>
+                <div class="info-card-desc">{{ c.desc }}</div>
+                <ul v-if="c.points.length" class="info-card-points">
+                  <li v-for="p in c.points" :key="p">{{ p }}</li>
+                </ul>
+              </div>
+            </div>
+          </template>
+
           <!-- 天候タブ -->
           <template v-else-if="typeChartTab === 'weather'">
             <div class="info-card-list">
@@ -647,25 +800,47 @@ export default defineComponent({
             </div>
             <button class="danger" @click="closeModal()">閉じる</button>
           </div>
-          <div class="stats" style="margin-top:12px">
+
+          <!-- バトル中HP・状態異常（自分も相手も表示） -->
+          <template v-if="detailsPokemon">
+            <div class="detail-battle-row">
+              <div class="detail-hp-info">
+                <span class="detail-hp-text">HP {{ Math.max(0, detailsPokemon.hp) }} / {{ detailsPokemon.maxHp }}</span>
+                <div class="hpbar" style="margin-top:4px">
+                  <div class="hpfill" :class="hpClass(Math.round(Math.max(0, detailsPokemon.hp) / detailsPokemon.maxHp * 100))" :style="{ width: Math.round(Math.max(0, detailsPokemon.hp) / detailsPokemon.maxHp * 100) + '%' }"></div>
+                </div>
+              </div>
+              <div v-if="detailsPokemon.status && !detailsPokemon.fainted" class="poke-status-badge" :class="'status-' + detailsPokemon.status" style="align-self:center;margin-left:8px">
+                {{ statusLabelModal(detailsPokemon.status) }}
+              </div>
+            </div>
+          </template>
+
+          <div class="stats" style="margin-top:10px">
             <div v-for="[key, label] in STAT_LABELS" :key="key" class="stat">
               {{ label }}<br><b>{{ data.DEX[store.modalProps.name].stats[key] }}</b>
             </div>
           </div>
+          <!-- 特性は相手にも表示 -->
+          <div v-if="data.ABILITY_DETAILS[detailsAbility]" class="ability-detail">
+            <b>特性：{{ detailsAbility }}</b><br>{{ data.ABILITY_DETAILS[detailsAbility].detail }}
+          </div>
+          <div v-else class="ability-detail"><b>特性：{{ detailsAbility || 'なし' }}</b></div>
+          <!-- 持ち物：自分側のみ。バトル中はpokemon.itemUsedで消耗判定。持ってないときは非表示。 -->
           <template v-if="!store.modalProps.isOpponent">
-            <div v-if="data.ABILITY_DETAILS[detailsAbility]" class="ability-detail">
-              <b>特性：{{ detailsAbility }}</b><br>{{ data.ABILITY_DETAILS[detailsAbility].detail }}
-            </div>
-            <div v-else class="ability-detail"><b>特性：{{ detailsAbility || 'なし' }}</b></div>
-            <!-- ※ 持ち物表示は削除禁止。はたきおとすで消えるのは pokemon.item でありここではない -->
-            <div v-if="detailsItem && data.ITEMS?.[detailsItem]" class="ability-detail" style="margin-top:4px">
-              <b>持ち物：{{ detailsItem }}</b><br>{{ data.ITEMS[detailsItem].detail }}
-            </div>
-            <div v-else-if="detailsItem" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ detailsItem }}</b></div>
-            <div v-else class="ability-detail" style="margin-top:4px;opacity:.6"><b>持ち物：なし</b></div>
-          </template>
-          <template v-else>
-            <div class="ability-detail" style="background:#f5f5f5;color:#999">特性・持ち物・使い方は相手ポケモンには非表示</div>
+            <template v-if="detailsPokemon">
+              <div v-if="detailsPokemon.item && !detailsPokemon.itemUsed && data.ITEMS?.[detailsPokemon.item]" class="ability-detail" style="margin-top:4px">
+                <b>持ち物：{{ detailsPokemon.item }}</b><br>{{ data.ITEMS[detailsPokemon.item].detail }}
+              </div>
+              <div v-else-if="detailsPokemon.item && !detailsPokemon.itemUsed" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ detailsPokemon.item }}</b></div>
+              <!-- 持ってない・使用済みは非表示 -->
+            </template>
+            <template v-else>
+              <div v-if="detailsItem && data.ITEMS?.[detailsItem]" class="ability-detail" style="margin-top:4px">
+                <b>持ち物：{{ detailsItem }}</b><br>{{ data.ITEMS[detailsItem].detail }}
+              </div>
+              <div v-else-if="detailsItem" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ detailsItem }}</b></div>
+            </template>
           </template>
           <h3 style="margin-top:14px">攻撃されたときのタイプ相性</h3>
           <div class="type-chart-result">
@@ -684,8 +859,9 @@ export default defineComponent({
                 class="move-chip"
                 :style="{ '--move-color': data.TYPES[data.MOVES[mn]?.type]?.color, background: data.TYPES[data.MOVES[mn]?.type]?.color, color: 'white' }"
               >
-                <b>{{ mn }}</b><br>
-                {{ data.MOVES[mn]?.type }} / {{ data.MOVES[mn]?.category }} / 威力{{ data.MOVES[mn]?.power }} / 命中{{ data.MOVES[mn]?.accuracy }} / PP{{ data.MOVES[mn]?.pp ?? '?' }}
+                <b>{{ mn }}</b>
+                <span v-if="detailsPokemon" class="move-pp-current"> PP {{ detailsPokemon.movePP?.[mn] ?? data.MOVES[mn]?.pp ?? '?' }} / {{ data.MOVES[mn]?.pp ?? '?' }}</span><br>
+                {{ data.MOVES[mn]?.type }} / {{ data.MOVES[mn]?.category }} / 威力{{ data.MOVES[mn]?.power }} / 命中{{ data.MOVES[mn]?.accuracy }}
                 <br><span v-if="data.MOVES[mn]?.effect" class="move-effect-chip">{{ data.MOVES[mn].effect }}</span>
                 <template v-if="currentOpponent()">
                   <br><span class="move-eff">相手への通り：{{ moveEffForDetail(mn, currentOpponent()) }}</span>
@@ -711,25 +887,47 @@ export default defineComponent({
           </div>
           <button class="danger" @click="closeStackModal()">閉じる</button>
         </div>
-        <div class="stats" style="margin-top:12px">
+
+        <!-- バトル中HP・状態異常（相手は場に出たことがある場合のみ） -->
+        <template v-if="stackPokemon && (!store.stackModalProps.isOpponent || stackPokemonRevealed)">
+          <div class="detail-battle-row">
+            <div class="detail-hp-info">
+              <span class="detail-hp-text">HP {{ Math.max(0, stackPokemon.hp) }} / {{ stackPokemon.maxHp }}</span>
+              <div class="hpbar" style="margin-top:4px">
+                <div class="hpfill" :class="hpClass(Math.round(Math.max(0, stackPokemon.hp) / stackPokemon.maxHp * 100))" :style="{ width: Math.round(Math.max(0, stackPokemon.hp) / stackPokemon.maxHp * 100) + '%' }"></div>
+              </div>
+            </div>
+            <div v-if="stackPokemon.status && !stackPokemon.fainted" class="poke-status-badge" :class="'status-' + stackPokemon.status" style="align-self:center;margin-left:8px">
+              {{ statusLabelModal(stackPokemon.status) }}
+            </div>
+          </div>
+        </template>
+
+        <div class="stats" style="margin-top:10px">
           <div v-for="[key, label] in STAT_LABELS" :key="key" class="stat">
             {{ label }}<br><b>{{ data.DEX[store.stackModalProps.name].stats[key] }}</b>
           </div>
         </div>
+        <!-- 特性は相手にも表示 -->
+        <div v-if="data.ABILITY_DETAILS[stackAbility]" class="ability-detail">
+          <b>特性：{{ stackAbility }}</b><br>{{ data.ABILITY_DETAILS[stackAbility].detail }}
+        </div>
+        <div v-else class="ability-detail"><b>特性：{{ stackAbility || 'なし' }}</b></div>
+        <!-- 持ち物：自分側のみ。バトル中はpokemon.itemUsedで消耗判定。持ってないときは非表示。 -->
         <template v-if="!store.stackModalProps.isOpponent">
-          <div v-if="data.ABILITY_DETAILS[stackAbility]" class="ability-detail">
-            <b>特性：{{ stackAbility }}</b><br>{{ data.ABILITY_DETAILS[stackAbility].detail }}
-          </div>
-          <div v-else class="ability-detail"><b>特性：{{ stackAbility || 'なし' }}</b></div>
-          <!-- ※ 持ち物表示は削除禁止。はたきおとすで消えるのは pokemon.item でありここではない -->
-          <div v-if="stackItem && data.ITEMS?.[stackItem]" class="ability-detail" style="margin-top:4px">
-            <b>持ち物：{{ stackItem }}</b><br>{{ data.ITEMS[stackItem].detail }}
-          </div>
-          <div v-else-if="stackItem" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ stackItem }}</b></div>
-          <div v-else class="ability-detail" style="margin-top:4px;opacity:.6"><b>持ち物：なし</b></div>
-        </template>
-        <template v-else>
-          <div class="ability-detail" style="background:#f5f5f5;color:#999">特性・持ち物・使い方は相手ポケモンには非表示</div>
+          <template v-if="stackPokemon">
+            <div v-if="stackPokemon.item && !stackPokemon.itemUsed && data.ITEMS?.[stackPokemon.item]" class="ability-detail" style="margin-top:4px">
+              <b>持ち物：{{ stackPokemon.item }}</b><br>{{ data.ITEMS[stackPokemon.item].detail }}
+            </div>
+            <div v-else-if="stackPokemon.item && !stackPokemon.itemUsed" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ stackPokemon.item }}</b></div>
+            <!-- 持ってない・使用済みは非表示 -->
+          </template>
+          <template v-else>
+            <div v-if="stackItem && data.ITEMS?.[stackItem]" class="ability-detail" style="margin-top:4px">
+              <b>持ち物：{{ stackItem }}</b><br>{{ data.ITEMS[stackItem].detail }}
+            </div>
+            <div v-else-if="stackItem" class="ability-detail" style="margin-top:4px"><b>持ち物：{{ stackItem }}</b></div>
+          </template>
         </template>
         <h3 style="margin-top:14px">攻撃されたときのタイプ相性</h3>
         <div class="type-chart-result">
@@ -748,8 +946,9 @@ export default defineComponent({
               class="move-chip"
               :style="{ '--move-color': data.TYPES[data.MOVES[mn]?.type]?.color, background: data.TYPES[data.MOVES[mn]?.type]?.color, color: 'white' }"
             >
-              <b>{{ mn }}</b><br>
-              {{ data.MOVES[mn]?.type }} / {{ data.MOVES[mn]?.category }} / 威力{{ data.MOVES[mn]?.power }} / 命中{{ data.MOVES[mn]?.accuracy }} / PP{{ data.MOVES[mn]?.pp ?? '?' }}
+              <b>{{ mn }}</b>
+              <span v-if="stackPokemon" class="move-pp-current"> PP {{ stackPokemon.movePP?.[mn] ?? data.MOVES[mn]?.pp ?? '?' }} / {{ data.MOVES[mn]?.pp ?? '?' }}</span><br>
+              {{ data.MOVES[mn]?.type }} / {{ data.MOVES[mn]?.category }} / 威力{{ data.MOVES[mn]?.power }} / 命中{{ data.MOVES[mn]?.accuracy }}
               <br><span v-if="data.MOVES[mn]?.effect" class="move-effect-chip">{{ data.MOVES[mn].effect }}</span>
               <template v-if="currentOpponent()">
                 <br><span class="move-eff">相手への通り：{{ moveEffForDetail(mn, currentOpponent()) }}</span>

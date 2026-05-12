@@ -24,6 +24,10 @@ function makePokemon(name) {
   };
   // ヌケニンのHPは常に1（ふしぎなまもりを持つ）
   if (name === 'ヌケニン') battleStats.hp = 1;
+  // はらだいこを覚えているポケモンはHPを偶数にする（腹太鼓コスト = maxHp/2 を整数にするため）
+  if (d.moves?.includes('はらだいこ') && battleStats.hp % 2 === 1) {
+    battleStats.hp += 1;
+  }
   return {
     name,
     sprite: d.sprite,
@@ -116,7 +120,10 @@ function resetVolatileStats(p) {
   p.taunt = 0;
   p.encored = null;
   p.encoreTurns = 0;
-  // perishSongCounter は交代でも維持
+  // 交代で出た直後はまだ技を使っていない扱い（アンコール失敗条件）
+  p.lastMoveUsed = null;
+  // ほろびのうたは交代で解除
+  p.perishSongCounter = 0;
   // status/sleepTurns は維持
   // もうどくカウンターは交代でリセット（Gen4仕様）
   if (p.status === 'tox') p.toxicCounter = 1;

@@ -28,7 +28,7 @@ const ENTRY_HOOKS = {
     if (!applied) return;
     const msg = `${target.name}の攻撃が下がった！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'stat', side: targetSide, labels: [{ text: '攻撃↓', tone: 'ability-blue' }], message: msg });
+    ctx.addEffect({ kind: 'stat', side: targetSide, targetIndex: ctx.state.game.active[targetSide], labels: [{ text: '攻撃↓', tone: 'ability-blue' }], message: msg, statStages: { ...target.statStages } });
   },
   'トレース': (side, ctx) => {
     const p = ctx.active(side);
@@ -48,28 +48,37 @@ const ENTRY_HOOKS = {
   'ひでり': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
+    if (ctx.state.game.weather?.type === 'sun') return;
     const turns = p.item === 'あついいわ' ? 8 : 5;
+    const beforeWeather = ctx.state.game.weather?.type || null;
     setWeather(ctx.state.game, 'sun', turns, ctx);
     const msg = `${p.name}のひでり！ 日差しが強くなった！${turns === 8 ? '（あついいわで延長）' : ''}`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'ひでり', labels: [{ text: 'ひでり', tone: 'ability-red' }], message: msg });
+    ctx.addEffect({ kind: 'weather-set', before: beforeWeather, after: 'sun', turns });
   },
   'あめふらし': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
+    if (ctx.state.game.weather?.type === 'rain') return;
     const turns = p.item === 'しめったいわ' ? 8 : 5;
+    const beforeWeather = ctx.state.game.weather?.type || null;
     setWeather(ctx.state.game, 'rain', turns, ctx);
     const msg = `${p.name}のあめふらし！ 雨が降り始めた！${turns === 8 ? '（しめったいわで延長）' : ''}`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'あめふらし', labels: [{ text: 'あめふらし', tone: 'ability-blue' }], message: msg });
+    ctx.addEffect({ kind: 'weather-set', before: beforeWeather, after: 'rain', turns });
   },
   'すなおこし': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
+    if (ctx.state.game.weather?.type === 'sand') return;
+    const beforeWeather = ctx.state.game.weather?.type || null;
     setWeather(ctx.state.game, 'sand', 5, ctx);
     const msg = `${p.name}のすなおこし！ 砂嵐が起きた！`;
     ctx.state.game.log.push(msg);
     ctx.addEffect({ kind: 'ability', side, ability: 'すなおこし', labels: [{ text: 'すなおこし', tone: 'ability-red' }], message: msg });
+    ctx.addEffect({ kind: 'weather-set', before: beforeWeather, after: 'sand', turns: 5 });
   },
   'かわりもの': (side, ctx) => {
     const p = ctx.active(side);
@@ -143,12 +152,14 @@ const END_TURN_HOOKS = {
   'かそく': (side, ctx) => {
     const p = ctx.active(side);
     if (!p || p.fainted) return;
+    // 交代で出たターンは発動しない（firstTurnOut フラグで判定）
+    if (p.firstTurnOut) return;
     const applied = applyStatStage(p, 'spe', 1);
     if (!applied) return;
     const mult = stageMultiplier(p.statStages.spe).toFixed(2).replace(/\.00$/, '');
     const msg = `${p.name}のかそく！ 素早さが${mult}倍になった！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'ability', side, ability: 'かそく', labels: [{ text: 'かそく', tone: 'ability-red' }], message: msg });
+    ctx.addEffect({ kind: 'ability', side, ability: 'かそく', labels: [{ text: 'かそく', tone: 'ability-red' }], message: msg, statStages: { ...p.statStages }, statTargetIndex: ctx.state.game.active[side] });
   },
   'さいせいりょく': (side, ctx) => {
     // さいせいりょく：交代時にHP1/3回復（engine.js の doSwitch で処理）
@@ -166,7 +177,7 @@ const END_TURN_HOOKS = {
     applyStatStage(p, downStat, -1);
     const msg = `${p.name}のムラっけ！${statNames[upStat]}が上がり、${statNames[downStat]}が下がった！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'ability', side, ability: 'ムラっけ', labels: [{ text: 'ムラっけ', tone: 'ability-red' }], message: msg });
+    ctx.addEffect({ kind: 'ability', side, ability: 'ムラっけ', labels: [{ text: 'ムラっけ', tone: 'ability-red' }], message: msg, statStages: { ...p.statStages }, statTargetIndex: ctx.state.game.active[side] });
   },
 };
 

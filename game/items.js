@@ -59,28 +59,31 @@ ITEM_HOOKS['かえんだま'] = {
     if (applyStatus(p, 'brn')) {
       const msg = `${p.name}はかえんだまのせいでやけどした！`;
       ctx.state.game.log.push(msg);
-      ctx.addEffect({ kind: 'status', side, status: 'brn', message: msg });
+      ctx.addEffect({ kind: 'status', side, status: 'brn', message: msg, targetIndex: ctx.state.game.active[side] });
     }
   },
 };
 
-// -------- オボンのみ：HP半分以下で1/4回復（きんちょうかん対策はSession3） --------
+// -------- オボンのみ即時発動チェック（HP半分以下になった時点でどこからでも呼べる） --------
+function checkSitrusBerry(pokemon, side, ctx) {
+  if (!pokemon || pokemon.fainted || pokemon.itemUsed || pokemon.item !== 'オボンのみ') return;
+  if (pokemon.hp <= 0 || pokemon.hp > Math.floor(pokemon.maxHp / 2)) return;
+  const opp = ctx.active(ctx.enemy(side));
+  if (opp && opp.ability === 'きんちょうかん') return;
+  const heal = Math.max(1, Math.floor(pokemon.maxHp / 4));
+  const hpBefore = pokemon.hp;
+  pokemon.hp = Math.min(pokemon.maxHp, pokemon.hp + heal);
+  pokemon.itemUsed = true;
+  const msg = `${pokemon.name}はオボンのみでHPを${pokemon.hp - hpBefore}回復した！`;
+  ctx.state.game.log.push(msg);
+  ctx.addEffect({ kind: 'hit', side, hpAfter: pokemon.hp, targetIndex: ctx.state.game.active[side], labels: [{ text: 'オボンのみ', tone: 'heal' }], message: msg });
+}
+
+// -------- オボンのみ：HP半分以下で1/4回復 --------
 ITEM_HOOKS['オボンのみ'] = {
+  // ターン終了時の状態異常ダメージ等でHP半分以下になった場合のフォールバック
   onEndTurn(side, ctx) {
-    const p = ctx.active(side);
-    if (!p || p.fainted || p.itemUsed) return;
-    if (p.hp <= Math.floor(p.maxHp / 2)) {
-      // 相手がきんちょうかん持ちなら発動しない
-      const opp = ctx.active(ctx.enemy(side));
-      if (opp && opp.ability === 'きんちょうかん') return;
-      const heal = Math.max(1, Math.floor(p.maxHp / 4));
-      const hpBefore = p.hp;
-      p.hp = Math.min(p.maxHp, p.hp + heal);
-      p.itemUsed = true;
-      const msg = `${p.name}はオボンのみでHPを${p.hp - hpBefore}回復した！`;
-      ctx.state.game.log.push(msg);
-      ctx.addEffect({ kind: 'hit', side, hpAfter: p.hp, targetIndex: ctx.state.game.active[side], labels: [{ text: 'オボンのみ', tone: 'heal' }], message: msg });
-    }
+    checkSitrusBerry(ctx.active(side), side, ctx);
   },
 };
 
@@ -98,7 +101,7 @@ ITEM_HOOKS['ラムのみ'] = {
     const labels = { brn: 'やけど', par: 'まひ', psn: 'どく', tox: 'もうどく', slp: 'ねむり', frz: 'こおり' };
     const msg = `${p.name}はラムのみで${labels[oldStatus] || oldStatus}が治った！`;
     ctx.state.game.log.push(msg);
-    ctx.addEffect({ kind: 'status', side, status: null, message: msg });
+    ctx.addEffect({ kind: 'status', side, status: null, message: msg, targetIndex: ctx.state.game.active[side] });
   },
 };
 
@@ -188,7 +191,6 @@ function getItemDefenderMult(defender, move) {
   // とつげきチョッキ：特殊技の被ダメージ 1/1.5 倍
   if (defender.item === 'とつげきチョッキ' && move.category === '特殊') {
     mult *= (2 / 3);
-    labels.push({ text: 'とつげきチョッキ', tone: 'ability-blue' });
     logs.push(`${defender.name}のとつげきチョッキ！特殊被ダメージ軽減！`);
   }
 
@@ -198,7 +200,6 @@ function getItemDefenderMult(defender, move) {
     const isSpecial = move.category === '特殊';
     if (isPhysical || isSpecial) {
       mult *= (2 / 3);
-      labels.push({ text: 'しんかのきせき', tone: 'ability-blue' });
       logs.push(`${defender.name}のしんかのきせき！耐久が1.5倍！`);
     }
   }
@@ -250,6 +251,7 @@ function applyLifeOrbRecoil(attacker, atkSide, ctx) {
   const msg = `${attacker.name}はいのちのたまの反動で${dmg}ダメージ！`;
   ctx.state.game.log.push(msg);
   ctx.addEffect({ kind: 'hit', side: atkSide, hpAfter: attacker.hp, targetIndex: ctx.state.game.active[atkSide], labels: [{ text: 'いのちのたま', tone: 'status-brn' }], message: msg });
+  checkSitrusBerry(attacker, atkSide, ctx);
   if (attacker.hp <= 0 && !attacker.fainted) {
     attacker.fainted = true;
     const fm = `${attacker.name}は気絶した！`;
@@ -262,5 +264,5 @@ module.exports = {
   ITEM_HOOKS,
   triggerItemOnEntry, triggerItemOnEndTurn,
   getItemAttackerMult, getItemDefenderMult, getItemSpeedMult,
-  checkItemSurvive, checkWeaknessPolicy, applyLifeOrbRecoil,
+  checkItemSurvive, checkWeaknessPolicy, applyLifeOrbRecoil, checkSitrusBerry,
 };

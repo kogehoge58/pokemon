@@ -1,11 +1,11 @@
 import { createApp, computed, ref } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, openModal, api, loadData, loadState, fetchParties, setUserName, playBgm } from './store.js';
+import { store, openModal, api, loadData, loadState, fetchParties, setUserName, playBgm, toggleUserBgm, applyUserSettings, staticSpriteUrl, displayedWeather } from './store.js';
 import SelectScreen from './components/SelectScreen.js';
 import BattleScreen from './components/BattleScreen.js';
 import ModalLayer from './components/ModalLayer.js';
 import PartyScreen from './components/PartyScreen.js';
 
-const VALID_USERS = ['ひびき', 'くさの', 'かいと'];
+const VALID_USERS = ['ひびき', 'くさの', 'かいと', 'ゲスト'];
 
 const app = createApp({
   setup() {
@@ -29,19 +29,21 @@ const app = createApp({
       setUserName(name);
       store.showPartyScreen = true;
       playBgm('ポケモンセンター.mp3');
+      applyUserSettings(name);
     }
 
-    return { store, game, mode, entryStatus, openModal, openEntryOrLogin, doLogin, api, VALID_USERS };
+    return { store, game, mode, entryStatus, openModal, openEntryOrLogin, doLogin, api, VALID_USERS, toggleUserBgm, displayedWeather };
   },
   template: `
     <div class="app">
       <!-- ヘッダー（ログイン済みのときのみ表示） -->
       <header v-if="store.userName">
         <div style="display:flex;align-items:center;gap:12px">
-          <div class="header-title">⚔️ ポケモンバトル</div>
+          <div class="header-title">簡易ポケモン</div>
           <span class="header-login-label">{{ store.userName }}でログイン中</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center">
+          <button @click="toggleUserBgm()" :title="store.bgmUserPaused ? 'BGM再生' : 'BGM一時停止'" style="font-size:16px;padding:8px 12px">{{ store.bgmUserPaused ? '▶' : '⏸' }}</button>
           <button @click="openModal('typeChart')">辞書</button>
           <template v-if="store.showPartyScreen">
             <button :class="entryStatus ? 'primary command-selected' : 'primary'" @click="openEntryOrLogin()">{{ entryStatus ? 'P' + entryStatus + ' エントリー中' : 'エントリー' }}</button>
@@ -64,8 +66,7 @@ const app = createApp({
       <!-- ログイン画面 -->
       <div v-else-if="!store.userName" class="login-screen">
         <div class="login-card">
-          <div class="login-title">🎮 ポケモンバトル</div>
-          <div class="login-subtitle">ログインしてください</div>
+          <div class="header-title">簡易ポケモン</div>
           <div class="login-buttons">
             <button
               v-for="u in VALID_USERS" :key="u"
@@ -93,9 +94,9 @@ const app = createApp({
       <!-- モーダルレイヤー -->
       <modal-layer v-if="store.masterData && store.userName" />
 
-      <!-- 天候オーバーレイ -->
-      <div v-if="mode === 'battle' && game?.weather?.type"
-           :class="'weather-overlay weather-' + game.weather.type"></div>
+      <!-- 天候オーバーレイ（displayedWeather でタイミング制御） -->
+      <div v-if="mode === 'battle' && displayedWeather()?.type"
+           :class="'weather-overlay weather-' + displayedWeather().type"></div>
 
       <!-- バトル開始演出オーバーレイ -->
       <div v-if="store.battleStartAnim" class="battle-start-overlay">
@@ -128,7 +129,8 @@ app.component('sprite-img', {
     function getUrl() {
       if (!props.mon) return '';
       if (props.fainted) {
-        return props.mon.staticSpriteUrl || props.mon.spriteUrl || '';
+        // 気絶時は静止PNG（GIFアニメ停止）。DEXのstaticSpriteUrl or マスターデータから取得
+        return props.mon.staticSpriteUrl || staticSpriteUrl(props.mon.name) || props.mon.spriteUrl || '';
       }
       return props.mon.spriteUrl || '';
     }

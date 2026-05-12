@@ -92,6 +92,9 @@ function startBattleIfFinalReady() {
   g.mode = 'battle';
   g.turn = 1;
   g.active = { A: 0, B: 0 };
+  // バトル開始時の先発ポケモンはねこだまし使用可能
+  g.teams.A[0].firstTurnOut = true;
+  g.teams.B[0].firstTurnOut = true;
   g.commands = { A: null, B: null };
   g.popupCloseId = state.popupCloseSeq;
   g.forceSwitch = null;
@@ -117,6 +120,9 @@ function startBattleFromPick() {
   g.mode = 'battle';
   g.turn = 1;
   g.active = { A: 0, B: 0 };
+  // バトル開始時の先発ポケモンはねこだまし使用可能
+  g.teams.A[0].firstTurnOut = true;
+  g.teams.B[0].firstTurnOut = true;
   g.commands = { A: null, B: null };
   g.popupCloseId = state.popupCloseSeq;
   g.forceSwitch = null;

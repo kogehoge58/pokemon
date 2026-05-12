@@ -1,5 +1,5 @@
 import { defineComponent, computed } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js';
-import { store, enemy, abilityOfPokemon, effectiveness, effText, hpClass, displayedActiveIndex, displayedHp, displayedSubstituteHp, openModal, api } from '../store.js';
+import { store, enemy, abilityOfPokemon, effectiveness, effText, hpClass, displayedActiveIndex, displayedHp, displayedSubstituteHp, displayedStatus, displayedStatStages, displayedYawnCounter, displayedTaunt, displayedEncore, displayedConfusion, displayedHazards, displayedWeather, displayedItemUsed, displayedItem, displayedPerishSong, openModal, api } from '../store.js';
 
 export default defineComponent({
   name: 'BattleScreen',
@@ -52,7 +52,9 @@ export default defineComponent({
     });
     const ownWaiting = computed(() => {
       const g = game.value;
-      return !!(g?.forceSwitch && g.forceSwitch !== role.value);
+      // 'AB'（両者同時気絶）は両プレイヤーが同時選択なので「待ち」ではない
+      if (!g?.forceSwitch || g.forceSwitch === 'AB') return false;
+      return g.forceSwitch !== role.value;
     });
     const selectedCmd = computed(() => {
       if (role.value !== 'A' && role.value !== 'B') return null;
@@ -63,6 +65,7 @@ export default defineComponent({
       const g = game.value;
       if (!g) return '';
       if (g.winner) return g.winner === 'draw' ? '引き分け' : (g.winner === s ? '勝利' : '敗北');
+      if (g.forceSwitch === 'AB') return '交代選択中';
       if (g.forceSwitch === s) return '交代選択中';
       if (g.forceSwitch) return '相手交代待ち';
       return g.commands[s] ? '選択済み' : '選択中';
@@ -116,8 +119,9 @@ export default defineComponent({
       return displayedActiveIndex(side);
     }
 
-    function statArrows(p, key) {
-      const stage = p.statStages?.[key] || 0;
+    function statArrows(side, index, key) {
+      const stages = displayedStatStages(side, index, game.value?.teams?.[side]?.[index]);
+      const stage = stages?.[key] || 0;
       if (stage > 0) return { dir: 'up', count: stage };
       if (stage < 0) return { dir: 'down', count: Math.abs(stage) };
       return null;
@@ -135,6 +139,16 @@ export default defineComponent({
       return `--move-color:${color};background:${color};color:white`;
     }
 
+    function burstStyle(s) {
+      const moveName = store.localBurstMove[s];
+      if (!moveName || !data.value?.MOVES?.[moveName]) return '';
+      const type = data.value.MOVES[moveName].type;
+      if (!type) return '';
+      const color = data.value?.TYPES?.[type]?.color;
+      if (!color) return '';
+      return `background:${color};border-color:rgba(0,0,0,.15);color:white`;
+    }
+
     function moveEffText(moveName, targetTypes) {
       const m = data.value?.MOVES?.[moveName];
       if (!m) return '';
@@ -150,10 +164,11 @@ export default defineComponent({
     return {
       store, game, data, role, battleMessage, stabWeakTypes, isDisabled, commandChosen, chargingMyMove, ownWaiting, selectedCmd,
       battleBadge, canSeePartyMon, isFaintVisualReady, animClass, resultClass, stampTone, stampText,
-      getShownHp, getActivePokemon, getActiveIndex, statArrows, statVal, statusLabel, movePanelStyle, moveEffText,
+      getShownHp, getActivePokemon, getActiveIndex, statArrows, statVal, statusLabel, movePanelStyle, moveEffText, burstStyle,
       isSelectedFight, isSelectedSwitch, isSelectedSurrender,
-      STAT_KEYS, enemy, abilityOfPokemon, hpClass, openModal, api, effectiveness, effText,
-      displayedActiveIndex, displayedHp, displayedSubstituteHp
+      STAT_KEYS, enemy, abilityOfPokemon, hpClass, openModal, api, effectiveness, effText, displayedPerishSong,
+      displayedActiveIndex, displayedHp, displayedSubstituteHp, displayedStatus,
+      displayedStatStages, displayedYawnCounter, displayedTaunt, displayedEncore, displayedConfusion, displayedHazards, displayedWeather, displayedItemUsed, displayedItem
     };
   },
   template: `
@@ -164,34 +179,32 @@ export default defineComponent({
 
         <!-- 左：プレイヤーA設置技 -->
         <div class="battle-status-col left">
-          <template v-if="game.hazards?.A?.stealthRock || game.hazards?.A?.spikes > 0 || game.hazards?.A?.stickyWeb">
-            <span class="hazard-side-label">PA</span>
-            <span v-if="game.hazards.A.stealthRock" class="hazard-tag">ステロ</span>
-            <span v-if="game.hazards.A.spikes > 0" class="hazard-tag">まきびし×{{ game.hazards.A.spikes }}</span>
-            <span v-if="game.hazards.A.stickyWeb" class="hazard-tag">ネット</span>
+          <template v-if="displayedHazards('A').stealthRock || displayedHazards('A').spikes > 0 || displayedHazards('A').stickyWeb">
+            <span v-if="displayedHazards('A').stealthRock" class="hazard-tag" style="background:#afa981">ステルスロック</span>
+            <span v-if="displayedHazards('A').spikes > 0" class="hazard-tag">まきびし×{{ displayedHazards('A').spikes }}</span>
+            <span v-if="displayedHazards('A').stickyWeb" class="hazard-tag" style="background:#91a119">ねばねばネット</span>
           </template>
           <span v-else class="battle-status-empty">—</span>
         </div>
 
         <!-- 中央：天候・トリックルーム（両者共通） -->
         <div class="battle-status-col center">
-          <div v-if="game.weather?.type" class="battle-weather-badge" :class="'weather-' + game.weather.type">
-            {{ { sun:'☀ 晴れ', rain:'🌧 雨', sand:'🌪 砂嵐', hail:'❄ あられ' }[game.weather.type] || game.weather.type }}
-            <span v-if="game.weather.turns > 0" class="weather-turns">残り{{ game.weather.turns }}T</span>
+          <div v-if="displayedWeather()?.type" class="battle-weather-badge" :class="'weather-' + displayedWeather().type">
+            {{ { sun:'☀ 晴れ', rain:'🌧 雨', sand:'🌪 砂嵐', hail:'❄ あられ' }[displayedWeather().type] || displayedWeather().type }}
+            <span v-if="displayedWeather().turns > 0" class="weather-turns">残り{{ displayedWeather().turns }}ターン</span>
           </div>
-          <div v-if="game.trickRoom > 0" class="battle-weather-badge" style="background:linear-gradient(135deg,#9c59d1,#6a1fa0)">
-            🔀 トリックルーム <span class="weather-turns">残り{{ game.trickRoom }}T</span>
+          <div v-if="(store.localTrickRoomOverride ?? game.trickRoom) > 0" class="battle-weather-badge" style="background:linear-gradient(135deg,#9c59d1,#6a1fa0)">
+            🔀 トリックルーム <span class="weather-turns">残り{{ store.localTrickRoomOverride ?? game.trickRoom }}T</span>
           </div>
-          <span v-if="!game.weather?.type && !game.trickRoom" class="battle-status-empty">—</span>
+          <span v-if="!displayedWeather()?.type && !(store.localTrickRoomOverride ?? game.trickRoom)" class="battle-status-empty">—</span>
         </div>
 
         <!-- 右：プレイヤーB設置技 -->
         <div class="battle-status-col right">
-          <template v-if="game.hazards?.B?.stealthRock || game.hazards?.B?.spikes > 0 || game.hazards?.B?.stickyWeb">
-            <span v-if="game.hazards.B.stealthRock" class="hazard-tag">ステロ</span>
-            <span v-if="game.hazards.B.spikes > 0" class="hazard-tag">まきびし×{{ game.hazards.B.spikes }}</span>
-            <span v-if="game.hazards.B.stickyWeb" class="hazard-tag">ネット</span>
-            <span class="hazard-side-label">PB</span>
+          <template v-if="displayedHazards('B').stealthRock || displayedHazards('B').spikes > 0 || displayedHazards('B').stickyWeb">
+            <span v-if="displayedHazards('B').stealthRock" class="hazard-tag" style="background:#afa981">ステルスロック</span>
+            <span v-if="displayedHazards('B').spikes > 0" class="hazard-tag">まきびし×{{ displayedHazards('B').spikes }}</span>
+            <span v-if="displayedHazards('B').stickyWeb" class="hazard-tag" style="background:#91a119">ねばねばネット</span>
           </template>
           <span v-else class="battle-status-empty">—</span>
         </div>
@@ -237,14 +250,28 @@ export default defineComponent({
                   <div class="types">
                     <type-badge v-for="t in getActivePokemon(s).types" :key="t" :type="t" />
                   </div>
-                  <!-- 自分側のみ特性・持ち物を表示 ※持ち物行は削除禁止・はたきおとすで pokemon.item が null になるので自動で消える -->
+                  <!-- 特性は常に表示、持ち物は自分側のみ ※消耗品はitemUsed=trueで非表示・はたきおとすでitem=nullで自動消える -->
+                  <div class="ability-badge">特性：{{ getActivePokemon(s).ability || abilityOfPokemon(getActivePokemon(s).name) }}</div>
                   <template v-if="role !== 'A' && role !== 'B' || s === role">
-                    <div class="ability-badge">特性：{{ getActivePokemon(s).ability || abilityOfPokemon(getActivePokemon(s).name) }}</div>
-                    <div v-if="getActivePokemon(s).item" class="item-badge">持ち物：{{ getActivePokemon(s).item }}</div>
+                    <div v-if="displayedItem(s, getActiveIndex(s), getActivePokemon(s)) && !displayedItemUsed(s, getActiveIndex(s), getActivePokemon(s))" class="item-badge">持ち物：{{ displayedItem(s, getActiveIndex(s), getActivePokemon(s)) }}</div>
                   </template>
-                  <div v-if="getActivePokemon(s).status" class="poke-status-badge" :class="'status-' + getActivePokemon(s).status">
-                    {{ statusLabel(getActivePokemon(s).status) }}
+                  <div v-if="displayedStatus(s, getActiveIndex(s), getActivePokemon(s)) && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge" :class="'status-' + displayedStatus(s, getActiveIndex(s), getActivePokemon(s))">
+                    {{ statusLabel(displayedStatus(s, getActiveIndex(s), getActivePokemon(s))) }}
                   </div>
+                  <div v-if="displayedYawnCounter(s, getActiveIndex(s), getActivePokemon(s)) > 0 && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge status-slp">
+                    ねむけ
+                  </div>
+                  <div v-if="displayedTaunt(s, getActiveIndex(s), getActivePokemon(s)) > 0 && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge status-taunt">
+                    ちょうはつ {{ displayedTaunt(s, getActiveIndex(s), getActivePokemon(s)) }}
+                  </div>
+                  <div v-if="displayedEncore(s, getActiveIndex(s), getActivePokemon(s)) > 0 && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge" style="background:#e67e22">
+                    アンコール {{ displayedEncore(s, getActiveIndex(s), getActivePokemon(s)) }}
+                  </div>
+                  <div v-if="displayedConfusion(s, getActiveIndex(s), getActivePokemon(s)) && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge" style="background:#9b59b6">
+                    こんらん
+                  </div>
+                  <div v-if="getActivePokemon(s)?.destinyBond && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge" style="background:#6b5bff">みちづれ</div>
+                  <div v-if="displayedPerishSong(s, getActiveIndex(s), getActivePokemon(s)) > 0 && !isFaintVisualReady(s, getActiveIndex(s), getActivePokemon(s))" class="poke-status-badge" style="background:#7a0000">ほろび {{ displayedPerishSong(s, getActiveIndex(s), getActivePokemon(s)) }}</div>
                   <!-- みがわりHP表示 -->
                   <div v-if="displayedSubstituteHp(s, getActiveIndex(s), getActivePokemon(s)) > 0" class="substitute-badge">みがわりHP:{{ displayedSubstituteHp(s, getActiveIndex(s), getActivePokemon(s)) }}</div>
                 </div>
@@ -276,16 +303,15 @@ export default defineComponent({
               </div>
 
               <!-- ムーブバースト -->
-              <div v-if="store.localBurstMove[s] || store.localBurstAbility[s]" class="move-burst">
-                <div v-if="store.localBurstMove[s]">{{ store.localBurstMove[s] }}</div>
-                <div v-if="store.localBurstAbility[s]" class="move-burst-ability">{{ store.localBurstAbility[s] }}</div>
+              <div v-if="store.localBurstMove[s]" class="move-burst" :style="burstStyle(s)">
+                <div>{{ store.localBurstMove[s] }}</div>
               </div>
 
               <!-- スタッツ -->
               <div class="stats">
                 <div v-for="[key, label] in STAT_KEYS" :key="key" class="stat">
                   {{ label }}<br>
-                  <b>{{ statVal(getActivePokemon(s), key) }}</b><span v-if="statArrows(getActivePokemon(s), key)?.dir === 'up'" class="stat-arrow-up">{{ '↑'.repeat(statArrows(getActivePokemon(s), key).count) }}</span><span v-if="statArrows(getActivePokemon(s), key)?.dir === 'down'" class="stat-arrow-down">{{ '↓'.repeat(statArrows(getActivePokemon(s), key).count) }}</span>
+                  <b>{{ statVal(getActivePokemon(s), key) }}</b><span v-if="statArrows(s, getActiveIndex(s), key)?.dir === 'up'" class="stat-arrow-up">{{ '↑'.repeat(statArrows(s, getActiveIndex(s), key).count) }}</span><span v-if="statArrows(s, getActiveIndex(s), key)?.dir === 'down'" class="stat-arrow-down">{{ '↓'.repeat(statArrows(s, getActiveIndex(s), key).count) }}</span>
                 </div>
               </div>
             </div>
@@ -302,11 +328,12 @@ export default defineComponent({
                   <div class="types" style="justify-content:center">
                     <type-badge v-for="t in m.types" :key="t" :type="t" />
                   </div>
-                  <div>{{ Math.max(0, displayedHp(s, i, m)) }}/{{ m.maxHp }}</div>
-                  <div v-if="m.status" class="party-status-badge" :class="'status-' + m.status">{{ statusLabel(m.status) }}</div>
+                  <div class="party-hpbar">
+                    <div class="hpfill" :class="hpClass(Math.max(0,Math.round(Math.max(0,displayedHp(s,i,m))/m.maxHp*100)))" :style="{width:Math.max(0,Math.round(Math.max(0,displayedHp(s,i,m))/m.maxHp*100))+'%'}"></div>
+                  </div>
+                  <div v-if="m.status && !m.fainted" class="party-status-badge" :class="'status-' + m.status">{{ statusLabel(m.status) }}</div>
                   <button
-                    style="margin-top:6px;padding:6px 8px"
-                    @click="openModal('details', { name: m.name, item: m.item, ability: m.ability, isOpponent: (role === 'A' || role === 'B') ? s !== role : false })"
+                    @click="openModal('details', { name: m.name, item: m.item, ability: m.ability, isOpponent: (role === 'A' || role === 'B') ? s !== role : false, pokemon: m })"
                   >詳細</button>
                 </div>
               </template>
@@ -339,7 +366,7 @@ export default defineComponent({
             <button
               :class="{ 'command-selected': isSelectedSwitch() }"
               :disabled="isDisabled || ownWaiting"
-              @click="openModal(game.forceSwitch === role ? 'forceSwitch' : 'pokemon')"
+              @click="openModal(game.forceSwitch === role || game.forceSwitch === 'AB' ? 'forceSwitch' : 'pokemon')"
             >{{ isSelectedSwitch() ? '✓ ' : '' }}ポケモン</button>
 
             <button @click="openModal('battleLog')">バトルログ</button>

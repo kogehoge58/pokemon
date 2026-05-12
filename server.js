@@ -19,7 +19,7 @@ Object.keys(DEX).forEach(name => {
 
 // --- パーティ管理 ---
 const PARTIES_FILE = path.join(__dirname, 'parties.json');
-const VALID_USERS = ['ひびき', 'くさの', 'かいと'];
+const VALID_USERS = ['ひびき', 'くさの', 'かいと', 'ゲスト'];
 
 function makeEmptyUserParties() {
   return {
@@ -56,7 +56,7 @@ function loadParties() {
     if (migrated) saveParties(result);
     return result;
   } catch {
-    return { ひびき: makeEmptyUserParties(), くさの: makeEmptyUserParties(), かいと: makeEmptyUserParties() };
+    return { ひびき: makeEmptyUserParties(), くさの: makeEmptyUserParties(), かいと: makeEmptyUserParties(), ゲスト: makeEmptyUserParties() };
   }
 }
 
@@ -95,7 +95,7 @@ function resetGame(closePopups = false) {
     forceSwitch: null,
     log: ['対戦ルームを作成しました。エントリーしてください。'],
     winner: null,
-    message: 'ひびき/くさの/かいとが接続設定からエントリーしてください。',
+    message: 'ひびき/くさの/かいと/ゲストが接続設定からエントリーしてください。',
     revealed: { A: [false, false, false], B: [false, false, false] },
     effects: [],
     effectId: 0,
@@ -201,6 +201,19 @@ const server = http.createServer(async (req, res) => {
       const parties = loadParties();
       if (!parties[user]) parties[user] = makeEmptyUserParties();
       parties[user].bgm = bgm || null;
+      saveParties(parties);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // 個別設定保存（panelColor / bgTheme）
+    if (url.pathname === '/save-user-setting') {
+      const { user, key, value } = body;
+      if (!VALID_USERS.includes(user)) return sendJson(res, 400, { error: 'ユーザーが不正です' });
+      const ALLOWED_KEYS = ['bgTheme'];
+      if (!ALLOWED_KEYS.includes(key)) return sendJson(res, 400, { error: 'キーが不正です' });
+      const parties = loadParties();
+      if (!parties[user]) parties[user] = makeEmptyUserParties();
+      parties[user][key] = value || null;
       saveParties(parties);
       return sendJson(res, 200, { ok: true });
     }
@@ -349,7 +362,11 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/force-switch') {
       const { side, index } = body;
-      if (!validSide(side) || g.forceSwitch !== side || !g.teams[side][index] || g.teams[side][index].fainted) return sendJson(res, 400, { error: '交代できません' });
+      if (!validSide(side)) return sendJson(res, 400, { error: '交代できません' });
+      if (!g.teams[side][index] || g.teams[side][index].fainted) return sendJson(res, 400, { error: '交代できません' });
+      const isBothSwitch = g.forceSwitch === 'AB';
+      if (!isBothSwitch && g.forceSwitch !== side) return sendJson(res, 400, { error: '交代フェーズ中です' });
+
       const { startEffects, finishEffects, addEffect, active } = require('./game/context.js');
       const { resetVolatileStats } = require('./game/pokemon.js');
       const { triggerOnEntry } = require('./game/abilities.js');
@@ -357,22 +374,115 @@ const server = http.createServer(async (req, res) => {
       const { applyHazardsOnEntry } = require('./game/hazards.js');
       const { nextTurn, resumeAfterPivot } = require('./game/engine.js');
       const fsCtx = { state, enemy, active, addEffect };
+
+      // ⚠️ 注意：この /force-switch ハンドラは engine.js の doSwitch() を経由しないインライン実装。
+      // doSwitch() に処理を追加した場合は、下の isBothSwitch パスと単独強制交代パスの両方にも必ず追加すること。
+
+      if (isBothSwitch) {
+        // 両者同時気絶：どちらかのサイドの選択を記録し、両方揃ったら実行
+        if (!g.pendingSwitch) g.pendingSwitch = {};
+        g.pendingSwitch[side] = index;
+        const hasA = g.pendingSwitch.A !== undefined;
+        const hasB = g.pendingSwitch.B !== undefined;
+        if (hasA && hasB) {
+          // 両方揃った → 同時に交代処理
+          g.popupCloseId = ++state.popupCloseSeq;
+          startEffects();
+          for (const s of ['A', 'B']) {
+            const idx = g.pendingSwitch[s];
+            const fromIndex = g.active[s];
+            addEffect({ kind: 'switch', side: s, fromIndex, toIndex: idx, message: '交換' });
+            resetVolatileStats(active(s));
+            g.active[s] = idx;
+            if (g.revealed?.[s]) g.revealed[s][idx] = true;
+            const incoming = active(s);
+            incoming.firstTurnOut = true;
+            const fsMsg = `プレイヤー${s}は ${incoming.name} を繰り出した！`;
+            g.log.push(fsMsg);
+            addEffect({ kind: 'message', side: s, message: fsMsg });
+            // いやしのねがい：エントリー処理より優先してHP全回復・状態異常回復
+            if (g.healingWish?.[s]) {
+              delete g.healingWish[s];
+              if (!incoming.fainted) {
+                incoming.hp = incoming.maxHp; incoming.status = null;
+                incoming.sleepTurns = 0; incoming.toxicCounter = 1;
+                const hwMsg = `いやしのねがいの効果で ${incoming.name} のHPが全回復した！`;
+                g.log.push(hwMsg);
+                addEffect({ kind: 'healing-wish', side: s, targetIndex: idx, hpAfter: incoming.hp, message: hwMsg });
+              }
+            }
+            applyHazardsOnEntry(s, incoming, fsCtx);
+            triggerOnEntry(s, fsCtx);
+            triggerItemOnEntry(s, fsCtx);
+          }
+          delete g.pendingSwitch;
+          g.forceSwitch = null;
+          nextTurn();
+          finishEffects();
+        } else {
+          // 片方が選択済み→もう片方待ち
+          const waitSide = hasA ? 'B' : 'A';
+          g.message = `プレイヤー${side}は選択済み。プレイヤー${waitSide}の選択待ちです。`;
+          g.log.push(g.message);
+        }
+        notify(); return sendJson(res, 200, { version: state.version, game: g });
+      }
+
+      // 通常の片側強制交代
       startEffects();
       const fromIndex = g.active[side];
       addEffect({ kind: 'switch', side, fromIndex, toIndex: index, message: '交換' });
       resetVolatileStats(active(side));
       g.active[side] = index;
       if (g.revealed?.[side]) g.revealed[side][index] = true;
-      const fsMsg = `プレイヤー${side}は ${active(side).name} を繰り出した！`;
+      const fsIncoming = active(side);
+      fsIncoming.firstTurnOut = true;
+      const fsMsg = `プレイヤー${side}は ${fsIncoming.name} を繰り出した！`;
       g.log.push(fsMsg);
       addEffect({ kind: 'message', side, message: fsMsg });
+      // いやしのねがい：エントリー処理より優先してHP全回復・状態異常回復
+      if (g.healingWish?.[side]) {
+        delete g.healingWish[side];
+        if (!fsIncoming.fainted) {
+          fsIncoming.hp = fsIncoming.maxHp; fsIncoming.status = null;
+          fsIncoming.sleepTurns = 0; fsIncoming.toxicCounter = 1;
+          const hwMsg = `いやしのねがいの効果で ${fsIncoming.name} のHPが全回復した！`;
+          g.log.push(hwMsg);
+          addEffect({ kind: 'healing-wish', side, targetIndex: index, hpAfter: fsIncoming.hp, message: hwMsg });
+        }
+      }
+      applyHazardsOnEntry(side, fsIncoming, fsCtx);
       triggerOnEntry(side, fsCtx);
       triggerItemOnEntry(side, fsCtx);
-      applyHazardsOnEntry(side, active(side), fsCtx);
-      if (g._resumeActions?.length) {
+      if (g._dbSeqSecond) {
+        // みちづれ順番交代：1番手完了 → 2番手の交代フェーズへ
+        const second = g._dbSeqSecond;
+        delete g._dbSeqSecond;
+        const secondActive = g.teams[second]?.[g.active[second]];
+        const secondNeed = secondActive?.fainted && g.teams[second].some(p => !p.fainted) && !g.winner;
+        if (secondNeed) {
+          g.forceSwitch = second;
+          g.commands = { A: null, B: null };
+          g.message = `プレイヤー${second}は次に出すポケモンを選んでください。`;
+          g.log.push(g.message);
+        } else {
+          nextTurn();
+        }
+      } else if (g._resumeActions?.length) {
         resumeAfterPivot();
       } else {
-        nextTurn();
+        // ピボット技でKOした場合、相手側も交代が必要か確認
+        const otherSide = enemy(side);
+        const otherActive = g.teams[otherSide]?.[g.active[otherSide]];
+        const otherNeedsSwitch = otherActive?.fainted && g.teams[otherSide].some(p => !p.fainted) && !g.winner;
+        if (otherNeedsSwitch) {
+          g.forceSwitch = otherSide;
+          g.commands = { A: null, B: null };
+          g.message = `プレイヤー${otherSide}は次に出すポケモンを選んでください。`;
+          g.log.push(g.message);
+        } else {
+          nextTurn();
+        }
       }
       finishEffects();
       notify(); return sendJson(res, 200, { version: state.version, game: g });
